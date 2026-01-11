@@ -412,15 +412,11 @@ class Buildings {
       metadata: building.userData.buildingDimensions
     });
     
-    // Create physics collider for the main body
-    const dims = building.userData.buildingDimensions;
-    if (dims) {
-      physicsMeshers.createBoxCollider(building, {
-        isStatic: true,
-        friction: 0.5,
-        restitution: 0.0
-      });
-    }
+    // Create trimesh physics collider for accurate collision
+    physicsMeshers.createTrimeshCollider(building, {
+      friction: 0.5,
+      restitution: 0.0
+    });
     
     this.buildings.push({ id, building, x, z });
     

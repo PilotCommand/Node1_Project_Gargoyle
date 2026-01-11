@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS = {
   mouseSensitivity: 0.002,
   musicVolume: 0.5,
   sfxVolume: 0.7,
-  showFPS: false,
+  showFPS: true,
   showDebug: false
 };
 
@@ -424,7 +424,7 @@ class Menu {
     screen.appendChild(title);
     
     const skull = document.createElement('div');
-    skull.textContent = '💀';
+    skull.textContent = 'ðŸ’€';
     skull.style.cssText = `
       font-size: 100px;
       margin-bottom: 30px;
@@ -469,7 +469,7 @@ class Menu {
     screen.appendChild(title);
     
     const trophy = document.createElement('div');
-    trophy.textContent = '🏆';
+    trophy.textContent = 'ðŸ†';
     trophy.style.cssText = `
       font-size: 100px;
       margin-bottom: 30px;

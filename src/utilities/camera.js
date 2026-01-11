@@ -1,75 +1,63 @@
 /**
- * Camera - Camera system with multiple modes
- * Handles third-person, first-person, and free camera
+ * Camera - Simplified camera system
+ * First-person, orbit, and free/developer modes
  */
 
 import * as THREE from 'three';
 
 // Camera modes
 export const CameraMode = {
-  THIRD_PERSON: 'thirdPerson',
-  FIRST_PERSON: 'firstPerson',
-  FREE: 'free',
-  ORBIT: 'orbit'  // For debugging/spectating
+  FIRST_PERSON: 'first-person',
+  ORBIT: 'orbit',
+  FREE: 'free'  // Developer noclip camera
 };
 
 class GameCamera {
   constructor() {
     this.camera = null;
-    this.mode = CameraMode.THIRD_PERSON;
-    
-    // Target to follow
     this.target = null;
-    this.targetOffset = new THREE.Vector3(0, 1.6, 0); // Eye height offset
     
-    // Third person settings
-    this.thirdPerson = {
-      distance: 8,
-      minDistance: 2,
-      maxDistance: 20,
-      height: 2,
-      damping: 5,        // Camera smoothing
-      currentDistance: 8
-    };
+    // Mouse look
+    this.yaw = 0;
+    this.pitch = 0;
+    this.sensitivity = 1.0;
     
-    // Camera rotation (euler angles)
-    this.rotation = {
-      yaw: 0,            // Horizontal rotation (around Y axis)
-      pitch: 0,          // Vertical rotation (around X axis)
-      minPitch: -Math.PI / 2 + 0.1,
-      maxPitch: Math.PI / 2 - 0.1
-    };
+    // Orbit settings
+    this.orbitDistance = 8;
+    this.minOrbitDistance = 2;
+    this.maxOrbitDistance = 50;
+    
+    // Current mode
+    this.mode = CameraMode.ORBIT;
+    this.previousMode = CameraMode.ORBIT; // Store mode before entering free cam
+    
+    // Target offset (eye height)
+    this.targetOffset = new THREE.Vector3(0, 1.6, 0);
     
     // Free camera settings
-    this.freeCam = {
-      speed: 20,
-      fastSpeed: 50,
-      position: new THREE.Vector3(0, 10, 20)
-    };
-    
-    // Smooth camera position
-    this.currentPosition = new THREE.Vector3();
-    this.desiredPosition = new THREE.Vector3();
-    
-    // Collision detection
-    this.collisionEnabled = true;
-    this.raycaster = new THREE.Raycaster();
-    this.collisionLayers = [];
+    this.freePosition = new THREE.Vector3(0, 10, 20);
+    this.freeSpeed = 20;
+    this.freeFastSpeed = 50;
   }
   
   /**
    * Initialize camera
-   * @param {THREE.PerspectiveCamera} camera - The Three.js camera
+   * @param {THREE.PerspectiveCamera} camera
    */
   init(camera) {
     this.camera = camera;
-    this.currentPosition.copy(camera.position);
+    this.freePosition.copy(camera.position);
+    
+    // Ensure camera uses YXZ rotation order (no roll)
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.z = 0;
+    
     console.log('Camera system initialized');
   }
   
   /**
    * Set the target to follow
-   * @param {THREE.Object3D} target - Object to follow
+   * @param {THREE.Object3D} target
    */
   setTarget(target) {
     this.target = target;
@@ -77,275 +65,238 @@ class GameCamera {
   
   /**
    * Set camera mode
-   * @param {string} mode - Mode from CameraMode
+   * @param {string} mode
    */
   setMode(mode) {
-    this.mode = mode;
-    console.log(`Camera mode: ${mode}`);
-    
-    if (mode === CameraMode.FREE) {
-      // Store current position for free cam
-      this.freeCam.position.copy(this.camera.position);
+    // Map old mode names to new ones
+    if (mode === 'thirdPerson') {
+      this.mode = CameraMode.ORBIT;
+      this.orbitDistance = 8;
+    } else if (mode === 'firstPerson') {
+      this.mode = CameraMode.FIRST_PERSON;
+      this.orbitDistance = 0;
+    } else {
+      this.mode = mode;
     }
+    console.log(`Camera mode: ${this.mode}`);
   }
   
   /**
-   * Toggle between third person and free camera
+   * Toggle free/developer camera mode
    */
   toggleFreeCamera() {
     if (this.mode === CameraMode.FREE) {
-      this.setMode(CameraMode.THIRD_PERSON);
+      // Return to previous mode
+      this.mode = this.previousMode;
+      console.log(`Camera mode: ${this.mode} (exited free cam)`);
     } else {
-      this.setMode(CameraMode.FREE);
+      // Enter free camera mode
+      this.previousMode = this.mode;
+      this.mode = CameraMode.FREE;
+      // Start free cam at current camera position
+      this.freePosition.copy(this.camera.position);
+      // Sync yaw/pitch from current camera to avoid weird rotation
+      // The camera rotation is already set by update(), so yaw/pitch are current
+      console.log('Camera mode: FREE (developer)');
     }
   }
   
   /**
    * Handle mouse input for rotation
-   * @param {number} deltaX - Mouse X movement
-   * @param {number} deltaY - Mouse Y movement
+   * @param {number} deltaX
+   * @param {number} deltaY
    */
   handleMouseInput(deltaX, deltaY) {
-    // Update yaw (horizontal)
-    this.rotation.yaw -= deltaX;
+    this.yaw -= deltaX * this.sensitivity;
+    this.pitch -= deltaY * this.sensitivity;
     
-    // Update pitch (vertical) with clamping
-    // Invert for third person, normal for free cam
-    if (this.mode === CameraMode.THIRD_PERSON || this.mode === CameraMode.ORBIT) {
-        this.rotation.pitch += deltaY;
-    } else {
-        this.rotation.pitch -= deltaY;
-    }
-    
-    this.rotation.pitch = Math.max(
-        this.rotation.minPitch,
-        Math.min(this.rotation.maxPitch, this.rotation.pitch)
-    );
+    // Clamp pitch to avoid flipping
+    this.pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, this.pitch));
   }
   
   /**
-   * Update camera (call every frame)
-   * @param {number} deltaTime - Time since last frame
-   * @param {object} movement - Movement input { forward, right, sprint }
+   * Zoom in/out (changes orbit distance)
+   * @param {number} delta - Positive = zoom in, negative = zoom out
+   */
+  zoom(delta) {
+    // Don't zoom in free camera mode
+    if (this.mode === CameraMode.FREE) return;
+    
+    this.orbitDistance -= delta * 5;
+    this.orbitDistance = Math.max(0, Math.min(this.maxOrbitDistance, this.orbitDistance));
+    
+    // Switch modes based on orbit distance
+    if (this.orbitDistance <= this.minOrbitDistance) {
+      this.mode = CameraMode.FIRST_PERSON;
+    } else {
+      this.mode = CameraMode.ORBIT;
+    }
+  }
+  
+  /**
+   * Update camera position (call every frame)
+   * @param {number} deltaTime
+   * @param {object} movement - Movement input { forward, right, jump, sprint, crouch }
    */
   update(deltaTime, movement = null) {
     if (!this.camera) return;
     
-    switch (this.mode) {
-      case CameraMode.THIRD_PERSON:
-        this.updateThirdPerson(deltaTime);
-        break;
-      case CameraMode.FIRST_PERSON:
-        this.updateFirstPerson(deltaTime);
-        break;
-      case CameraMode.FREE:
-        this.updateFreeCamera(deltaTime, movement);
-        break;
-      case CameraMode.ORBIT:
-        this.updateOrbit(deltaTime);
-        break;
+    // Free camera mode - handle movement independently
+    if (this.mode === CameraMode.FREE) {
+      this.updateFreeCamera(deltaTime, movement);
+      return;
     }
-  }
-  
-  /**
-   * Update third-person camera
-   */
-  updateThirdPerson(deltaTime) {
+    
+    // Normal modes require a target
     if (!this.target) return;
     
-    // Get target position with offset
+    // Get target position
     const targetPos = new THREE.Vector3();
     this.target.getWorldPosition(targetPos);
     targetPos.add(this.targetOffset);
     
-    // Calculate desired camera position based on rotation
-    const spherical = new THREE.Spherical(
-      this.thirdPerson.distance,
-      Math.PI / 2 - this.rotation.pitch,  // Polar angle
-      this.rotation.yaw                     // Azimuthal angle
-    );
-    
-    const offset = new THREE.Vector3().setFromSpherical(spherical);
-    this.desiredPosition.copy(targetPos).add(offset);
-    
-    // Optional: Camera collision
-    if (this.collisionEnabled) {
-      this.handleCameraCollision(targetPos);
+    if (this.mode === CameraMode.FIRST_PERSON || this.orbitDistance <= this.minOrbitDistance) {
+      // First person: camera at target position
+      this.camera.position.copy(targetPos);
+      
+      // Apply rotation directly - YXZ order, no roll
+      this.camera.rotation.order = 'YXZ';
+      this.camera.rotation.set(this.pitch, this.yaw, 0);
+      
+    } else {
+      // Orbit mode: camera orbits around target
+      // Use -pitch to make vertical orbit feel natural
+      const offsetX = Math.sin(this.yaw) * Math.cos(-this.pitch) * this.orbitDistance;
+      const offsetY = Math.sin(-this.pitch) * this.orbitDistance;
+      const offsetZ = Math.cos(this.yaw) * Math.cos(-this.pitch) * this.orbitDistance;
+      
+      this.camera.position.set(
+        targetPos.x + offsetX,
+        targetPos.y + offsetY,
+        targetPos.z + offsetZ
+      );
+      
+      // Look at target, then zero out roll
+      this.camera.lookAt(targetPos);
+      this.camera.rotation.z = 0;
     }
-    
-    // Smooth camera movement
-    const lerpFactor = 1 - Math.exp(-this.thirdPerson.damping * deltaTime);
-    this.currentPosition.lerp(this.desiredPosition, lerpFactor);
-    
-    // Apply position
-    this.camera.position.copy(this.currentPosition);
-    
-    // Look at target
-    this.camera.lookAt(targetPos);
   }
   
   /**
-   * Update first-person camera
-   */
-  updateFirstPerson(deltaTime) {
-    if (!this.target) return;
-    
-    // Position camera at target's head
-    const targetPos = new THREE.Vector3();
-    this.target.getWorldPosition(targetPos);
-    targetPos.add(this.targetOffset);
-    
-    this.camera.position.copy(targetPos);
-    
-    // Apply rotation
-    this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.y = this.rotation.yaw;
-    this.camera.rotation.x = this.rotation.pitch;
-  }
-  
-  /**
-   * Update free camera (noclip style)
+   * Update free/developer camera
+   * @param {number} deltaTime
+   * @param {object} movement
    */
   updateFreeCamera(deltaTime, movement) {
-    if (!movement) return;
+    // Apply rotation - YXZ order, no roll
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.set(this.pitch, this.yaw, 0);
     
-    const speed = movement.sprint 
-      ? this.freeCam.fastSpeed 
-      : this.freeCam.speed;
-    
-    // Get camera direction vectors
-    const forward = new THREE.Vector3();
-    const right = new THREE.Vector3();
-    
-    this.camera.getWorldDirection(forward);
-    right.crossVectors(forward, this.camera.up).normalize();
-    
-    // Calculate movement
-    const moveVector = new THREE.Vector3();
-    
-    if (movement.forward !== 0) {
-      moveVector.addScaledVector(forward, movement.forward * speed * deltaTime);
+    if (!movement) {
+      this.camera.position.copy(this.freePosition);
+      return;
     }
-    if (movement.right !== 0) {
-      moveVector.addScaledVector(right, movement.right * speed * deltaTime);
-    }
-    if (movement.jump) {
-      moveVector.y += speed * deltaTime;
-    }
-    if (movement.crouch) {
-      moveVector.y -= speed * deltaTime;
-    }
+    
+    // Constant speed for free cam (no sprint)
+    const speed = this.freeSpeed;
+    
+    // Get direction vectors from camera
+    const forward = new THREE.Vector3(
+      -Math.sin(this.yaw) * Math.cos(this.pitch),
+      Math.sin(this.pitch),
+      -Math.cos(this.yaw) * Math.cos(this.pitch)
+    ).normalize();
+    
+    const right = new THREE.Vector3(
+      Math.cos(this.yaw),
+      0,
+      -Math.sin(this.yaw)
+    ).normalize();
+    
+    const up = new THREE.Vector3(0, 1, 0);
     
     // Apply movement
-    this.freeCam.position.add(moveVector);
-    this.camera.position.copy(this.freeCam.position);
-    
-    // Apply rotation
-    this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.y = this.rotation.yaw;
-    this.camera.rotation.x = this.rotation.pitch;
-  }
-  
-  /**
-   * Update orbit camera (auto-rotate around origin)
-   */
-  updateOrbit(deltaTime) {
-    // This is kept for testing/debugging
-    this.rotation.yaw += deltaTime * 0.15;
-    
-    const radius = 60;
-    this.camera.position.x = Math.sin(this.rotation.yaw) * radius;
-    this.camera.position.z = Math.cos(this.rotation.yaw) * radius;
-    this.camera.position.y = 30;
-    this.camera.lookAt(0, 0, 0);
-  }
-  
-  /**
-   * Handle camera collision to prevent clipping through walls
-   */
-  handleCameraCollision(targetPos) {
-    if (this.collisionLayers.length === 0) return;
-    
-    // Cast ray from target to desired camera position
-    const direction = new THREE.Vector3()
-      .subVectors(this.desiredPosition, targetPos)
-      .normalize();
-    
-    const distance = targetPos.distanceTo(this.desiredPosition);
-    
-    this.raycaster.set(targetPos, direction);
-    this.raycaster.far = distance;
-    
-    const intersects = this.raycaster.intersectObjects(this.collisionLayers, true);
-    
-    if (intersects.length > 0) {
-      // Move camera closer to avoid collision
-      const collisionDistance = intersects[0].distance - 0.5; // Buffer
-      if (collisionDistance < distance) {
-        this.desiredPosition.copy(targetPos).addScaledVector(
-          direction,
-          Math.max(this.thirdPerson.minDistance, collisionDistance)
-        );
-      }
+    if (movement.forward !== 0) {
+      this.freePosition.addScaledVector(forward, movement.forward * speed * deltaTime);
     }
-  }
-  
-  /**
-   * Set objects for collision detection
-   * @param {THREE.Object3D[]} objects
-   */
-  setCollisionLayers(objects) {
-    this.collisionLayers = objects;
-  }
-  
-  /**
-   * Zoom camera in/out
-   * @param {number} delta - Zoom amount (positive = zoom in)
-   */
-  zoom(delta) {
-    if (this.mode === CameraMode.THIRD_PERSON) {
-      this.thirdPerson.distance = Math.max(
-        this.thirdPerson.minDistance,
-        Math.min(
-          this.thirdPerson.maxDistance,
-          this.thirdPerson.distance - delta
-        )
-      );
+    if (movement.right !== 0) {
+      this.freePosition.addScaledVector(right, movement.right * speed * deltaTime);
     }
+    
+    // Space = up, Shift (sprint) = down
+    if (movement.jump) {
+      this.freePosition.addScaledVector(up, speed * deltaTime);
+    }
+    if (movement.sprint) {
+      this.freePosition.addScaledVector(up, -speed * deltaTime);
+    }
+    
+    // Apply position
+    this.camera.position.copy(this.freePosition);
   }
   
   /**
-   * Get the forward direction the camera is facing (horizontal only)
+   * Get the forward direction (horizontal only, for movement)
    * @returns {THREE.Vector3}
    */
   getForwardDirection() {
-    const forward = new THREE.Vector3(
-      -Math.sin(this.rotation.yaw),
+    return new THREE.Vector3(
+      -Math.sin(this.yaw),
       0,
-      -Math.cos(this.rotation.yaw)
-    );
-    return forward.normalize();
+      -Math.cos(this.yaw)
+    ).normalize();
   }
   
   /**
-   * Get the right direction relative to camera
+   * Get the right direction (for strafing)
    * @returns {THREE.Vector3}
    */
   getRightDirection() {
-    const right = new THREE.Vector3(
-      Math.cos(this.rotation.yaw),
+    return new THREE.Vector3(
+      Math.cos(this.yaw),
       0,
-      -Math.sin(this.rotation.yaw)
-    );
-    return right.normalize();
+      -Math.sin(this.yaw)
+    ).normalize();
   }
   
   /**
-   * Get current yaw rotation
+   * Get current yaw
    * @returns {number}
    */
   getYaw() {
-    return this.rotation.yaw;
+    return this.yaw;
+  }
+  
+  /**
+   * Get current pitch
+   * @returns {number}
+   */
+  getPitch() {
+    return this.pitch;
+  }
+  
+  /**
+   * Check if in first person mode
+   * @returns {boolean}
+   */
+  isFirstPerson() {
+    return this.mode === CameraMode.FIRST_PERSON || this.orbitDistance <= this.minOrbitDistance;
+  }
+  
+  /**
+   * Check if in free camera mode
+   * @returns {boolean}
+   */
+  isFreeCam() {
+    return this.mode === CameraMode.FREE;
+  }
+  
+  /**
+   * Set mouse sensitivity
+   * @param {number} value
+   */
+  setSensitivity(value) {
+    this.sensitivity = value;
   }
 }
 

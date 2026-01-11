@@ -44,7 +44,7 @@ class GameMap {
     this.ground = null;
     this.debugGrid = null;
     this.boundaries = [];
-    this.isDebugVisible = true;
+    this.isDebugVisible = false;  // Start with debug OFF
     this.seed = null;
     
     // Map data
@@ -85,6 +85,7 @@ class GameMap {
     // Set up spawn points
     this.generateSpawnPoints();
     
+    meshRegistry.setCategoryVisibility(MeshCategory.DEBUG, this.isDebugVisible);
     console.log('Map initialized');
   }
   

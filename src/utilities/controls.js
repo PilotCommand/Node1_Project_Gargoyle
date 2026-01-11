@@ -12,7 +12,7 @@ const KEY_BINDINGS = {
   right: ['d', 'arrowright'],
   jump: [' '],           // spacebar
   sprint: ['shift'],
-  crouch: ['c', 'control'],
+  crouch: ['c'],
   
   // Actions
   interact: ['e'],
@@ -22,10 +22,9 @@ const KEY_BINDINGS = {
   lookAround: ['mouse1'], // right click (hold)
   
   // Developer/Debug
-  toggleDebug: ['g'],
-  togglePause: ['p'],
+  toggleDebug: ['p'],     // P toggles all debug info
   toggleFullscreen: ['f11'],
-  freeCam: ['f'],
+  freeCam: ['control'],   // Ctrl toggles free/dev camera
   resetPosition: ['r']
 };
 
@@ -266,9 +265,6 @@ class Controls {
     if (this.devMode) {
       if (this.isKeyInBinding(key, 'toggleDebug')) {
         if (this.onAction) this.onAction('toggleDebug');
-      }
-      if (this.isKeyInBinding(key, 'togglePause')) {
-        if (this.onAction) this.onAction('togglePause');
       }
       if (this.isKeyInBinding(key, 'freeCam')) {
         if (this.onAction) this.onAction('freeCam');

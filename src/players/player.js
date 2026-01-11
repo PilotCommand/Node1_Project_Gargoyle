@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
+import physicsMeshers from '../physics/physicsmeshers.js';
 
 // Player states
 export const PlayerState = {
@@ -252,6 +253,15 @@ class Player {
       .setRestitution(0.0);
     
     this.collider = physicsWorld.createCollider(colliderDesc, this.physicsBody);
+    
+    // Create debug wireframe for the capsule collider
+    const capsuleCenter = new THREE.Vector3(
+      this.position.x,
+      this.position.y + this.height / 2,
+      this.position.z
+    );
+    this.debugMesh = physicsMeshers.createDebugCapsule(capsuleCenter, this.radius, halfHeight);
+    physicsMeshers.addDebugWireframe(this.debugMesh, `player_${this.name}`);
   }
   
   /**
@@ -269,6 +279,11 @@ class Player {
         { x: x, y: y + this.height / 2, z: z },
         true
       );
+    }
+    
+    // Update debug wireframe position
+    if (this.debugMesh) {
+      this.debugMesh.position.set(x, y + this.height / 2, z);
     }
   }
   
@@ -353,6 +368,11 @@ class Player {
       // Get velocity
       const linvel = this.physicsBody.linvel();
       this.velocity.set(linvel.x, linvel.y, linvel.z);
+      
+      // Sync debug wireframe position with physics body
+      if (this.debugMesh) {
+        this.debugMesh.position.set(translation.x, translation.y, translation.z);
+      }
     }
     
     // Smooth rotation

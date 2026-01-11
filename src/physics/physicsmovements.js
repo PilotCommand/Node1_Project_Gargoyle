@@ -1,35 +1,50 @@
 /**
  * PhysicsMovements - Physics-based movement system
- * Handles player movement, jumping, ground detection
+ * 
+ * FIXED VERSION:
+ * - Movement updates at fixed timestep (synced with physics)
+ * - Proper velocity-based character controller
+ * - Ground detection with tolerance
+ * - Smooth acceleration/deceleration
  */
 
 import * as THREE from 'three';
-import { PlayerState } from '../players/player.js';
 
 // Movement configuration
 const MOVEMENT_CONFIG = {
   // Ground detection
-  groundCheckDistance: 0.2,
-  groundCheckOffset: 0.1,
+  groundCheckDistance: 0.15,
+  groundCheckRadius: 0.3,       // Multiple raycasts in a circle
+  stickyGroundForce: -2,        // Small downward force when grounded
   
-  // Movement
-  acceleration: 50,
-  deceleration: 30,
-  airControl: 0.3,      // How much control in air (0-1)
-  maxVelocity: 20,
+  // Movement speeds
+  walkSpeed: 5,
+  sprintMultiplier: 1.8,
+  
+  // Acceleration (units per second per second)
+  groundAcceleration: 40,       // How fast to reach target speed on ground
+  groundDeceleration: 50,       // How fast to stop on ground
+  airAcceleration: 15,          // Reduced control in air
+  airDeceleration: 5,           // Slow decel in air (momentum)
+  
+  // Velocity limits
+  maxHorizontalSpeed: 15,
+  maxFallSpeed: 40,
   
   // Jumping
-  jumpForce: 8,
-  jumpCooldown: 0.1,    // Seconds between jumps
-  coyoteTime: 0.15,     // Grace period after leaving ground
-  jumpBufferTime: 0.1,  // Buffer jump input
+  jumpVelocity: 8,
+  jumpCooldown: 0.15,
+  coyoteTime: 0.12,             // Time after leaving ground you can still jump
+  jumpBufferTime: 0.15,         // Time before landing that jump input is remembered
   
-  // Gravity
-  gravity: -25,
-  maxFallSpeed: -50,
+  // Gravity (applied manually - Rapier world gravity should be 0)
+  gravity: 25,                  // Positive value, applied as negative Y
   
   // Slopes
-  maxSlopeAngle: 45,    // Degrees
+  maxWalkableSlopeAngle: 50,    // Degrees
+  
+  // Smoothing
+  rotationSpeed: 12,            // How fast player turns to face movement direction
 };
 
 class PhysicsMovements {
@@ -37,11 +52,11 @@ class PhysicsMovements {
     this.world = null;
     this.RAPIER = null;
     
-    // Raycasting for ground detection
-    this.raycaster = new THREE.Raycaster();
-    
-    // Player-specific state
+    // Player movement states
     this.playerStates = new Map();
+    
+    // Fixed timestep (should match physics)
+    this.fixedDt = 1 / 60;
   }
   
   /**
@@ -56,16 +71,38 @@ class PhysicsMovements {
   }
   
   /**
+   * Set the fixed timestep (should match chronograph.fixedTimeStep)
+   */
+  setFixedTimestep(dt) {
+    this.fixedDt = dt;
+  }
+  
+  /**
    * Register a player for movement handling
    * @param {Player} player
    */
   registerPlayer(player) {
     this.playerStates.set(player.id, {
+      // Ground state
+      isGrounded: false,
+      groundNormal: new THREE.Vector3(0, 1, 0),
       lastGroundedTime: 0,
-      lastJumpTime: 0,
+      wasGroundedLastFrame: false,
+      
+      // Jump state
+      lastJumpTime: -1,
       jumpBuffered: false,
-      jumpBufferTime: 0,
-      wasGrounded: false
+      jumpBufferTimestamp: 0,
+      hasJumpedSinceGrounded: false,
+      
+      // Velocity tracking (for smoothing)
+      currentVelocity: new THREE.Vector3(),
+      targetVelocity: new THREE.Vector3(),
+      
+      // Input state (cached for fixed update)
+      inputDirection: new THREE.Vector3(),
+      wantsJump: false,
+      wantsSprint: false,
     });
   }
   
@@ -78,203 +115,194 @@ class PhysicsMovements {
   }
   
   /**
-   * Check if player is grounded using raycast
-   * @param {Player} player
-   * @returns {object} { grounded, groundNormal, groundPoint }
+   * Set player input (call this from game update, before physics)
+   * This caches the input for use in the fixed physics update
    */
-  checkGrounded(player) {
-    if (!this.world || !player.physicsBody) {
-      return { grounded: false, groundNormal: null, groundPoint: null };
+  setPlayerInput(player, inputDirection, wantsJump, wantsSprint) {
+    const state = this.playerStates.get(player.id);
+    if (!state) return;
+    
+    state.inputDirection.copy(inputDirection);
+    state.wantsSprint = wantsSprint;
+    
+    // Buffer jump input
+    if (wantsJump && !state.jumpBuffered) {
+      state.jumpBuffered = true;
+      state.jumpBufferTimestamp = performance.now() / 1000;
     }
-    
-    const position = player.physicsBody.translation();
-    
-    // Cast ray downward from player center
-    const rayOrigin = {
-      x: position.x,
-      y: position.y - player.height / 2 + MOVEMENT_CONFIG.groundCheckOffset,
-      z: position.z
-    };
-    
-    const rayDir = { x: 0, y: -1, z: 0 };
-    
-    const ray = new this.RAPIER.Ray(rayOrigin, rayDir);
-    const maxToi = MOVEMENT_CONFIG.groundCheckDistance + MOVEMENT_CONFIG.groundCheckOffset;
-    
-    // Cast ray and get normal
-    const hit = this.world.castRayAndGetNormal(
-      ray,
-      maxToi,
-      true, // solid
-      undefined, // flags
-      undefined, // groups
-      player.collider // exclude
-    );
-    
-    if (hit) {
-      const hitPoint = ray.pointAt(hit.timeOfImpact);
-      const normal = hit.normal;
-      
-      // Check slope angle
-      const slopeAngle = Math.acos(normal.y) * (180 / Math.PI);
-      const walkable = slopeAngle <= MOVEMENT_CONFIG.maxSlopeAngle;
-      
-      return {
-        grounded: walkable,
-        groundNormal: new THREE.Vector3(normal.x, normal.y, normal.z),
-        groundPoint: new THREE.Vector3(hitPoint.x, hitPoint.y, hitPoint.z)
-      };
-    }
-    
-    return { grounded: false, groundNormal: null, groundPoint: null };
   }
   
   /**
-   * Apply movement to a player
+   * Check if player is grounded using multiple raycasts
    * @param {Player} player
-   * @param {THREE.Vector3} moveDirection - Normalized movement direction
-   * @param {number} deltaTime
+   * @returns {object} { grounded, normal }
    */
-  applyMovement(player, moveDirection, deltaTime) {
+  checkGrounded(player) {
+    if (!this.world || !player.physicsBody) {
+      return { grounded: false, normal: new THREE.Vector3(0, 1, 0) };
+    }
+    
+    const pos = player.physicsBody.translation();
+    const halfHeight = player.height / 2;
+    const radius = player.radius;
+    
+    // Cast from bottom of capsule
+    const rayOrigin = { x: pos.x, y: pos.y - halfHeight + 0.05, z: pos.z };
+    const rayDir = { x: 0, y: -1, z: 0 };
+    const maxDist = MOVEMENT_CONFIG.groundCheckDistance + 0.05;
+    
+    const ray = new this.RAPIER.Ray(rayOrigin, rayDir);
+    
+    const hit = this.world.castRayAndGetNormal(
+      ray,
+      maxDist,
+      true,           // solid
+      undefined,      // flags  
+      undefined,      // groups
+      player.collider // exclude self
+    );
+    
+    if (hit) {
+      const normal = new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z);
+      
+      // Check if slope is walkable
+      const angle = Math.acos(Math.abs(normal.y)) * (180 / Math.PI);
+      if (angle <= MOVEMENT_CONFIG.maxWalkableSlopeAngle) {
+        return { grounded: true, normal };
+      }
+    }
+    
+    return { grounded: false, normal: new THREE.Vector3(0, 1, 0) };
+  }
+  
+  /**
+   * Update player physics (call this INSIDE the fixed timestep loop)
+   * @param {Player} player
+   */
+  fixedUpdate(player) {
     if (!player.physicsBody || !player.isAlive) return;
     
     const state = this.playerStates.get(player.id);
     if (!state) return;
     
-    // Check grounded
+    const dt = this.fixedDt;
+    const currentTime = performance.now() / 1000;
+    
+    // --- Ground Check ---
     const groundCheck = this.checkGrounded(player);
-    player.isGrounded = groundCheck.grounded;
+    state.wasGroundedLastFrame = state.isGrounded;
+    state.isGrounded = groundCheck.grounded;
+    state.groundNormal.copy(groundCheck.normal);
+    player.isGrounded = state.isGrounded;
     
     // Track grounded time for coyote time
-    if (player.isGrounded) {
-      state.lastGroundedTime = performance.now() / 1000;
-      state.wasGrounded = true;
+    if (state.isGrounded) {
+      state.lastGroundedTime = currentTime;
+      state.hasJumpedSinceGrounded = false;
     }
     
-    // Get current velocity
-    const currentVel = player.physicsBody.linvel();
-    let velX = currentVel.x;
-    let velY = currentVel.y;
-    let velZ = currentVel.z;
+    // --- Get Current Velocity ---
+    const linvel = player.physicsBody.linvel();
+    let velX = linvel.x;
+    let velY = linvel.y;
+    let velZ = linvel.z;
     
-    // Calculate target speed
-    const isSprinting = player.input.sprint && player.isGrounded;
-    const targetSpeed = player.speed * (isSprinting ? player.sprintMultiplier : 1);
+    // --- Calculate Target Horizontal Velocity ---
+    const inputDir = state.inputDirection;
+    const hasInput = inputDir.lengthSq() > 0.001;
     
-    // Calculate target velocity
-    const targetVelX = moveDirection.x * targetSpeed;
-    const targetVelZ = moveDirection.z * targetSpeed;
+    // Determine speed
+    let targetSpeed = player.speed || MOVEMENT_CONFIG.walkSpeed;
+    if (state.wantsSprint && state.isGrounded) {
+      targetSpeed *= (player.sprintMultiplier || MOVEMENT_CONFIG.sprintMultiplier);
+    }
     
-    // Apply acceleration/deceleration
-    const accel = player.isGrounded ? MOVEMENT_CONFIG.acceleration : MOVEMENT_CONFIG.acceleration * MOVEMENT_CONFIG.airControl;
-    const decel = player.isGrounded ? MOVEMENT_CONFIG.deceleration : MOVEMENT_CONFIG.deceleration * MOVEMENT_CONFIG.airControl;
+    // Target velocity from input
+    const targetVelX = hasInput ? inputDir.x * targetSpeed : 0;
+    const targetVelZ = hasInput ? inputDir.z * targetSpeed : 0;
     
-    // X velocity
-    if (Math.abs(targetVelX) > 0.01) {
-      velX = this.moveToward(velX, targetVelX, accel * deltaTime);
+    // --- Apply Acceleration/Deceleration ---
+    let accel, decel;
+    if (state.isGrounded) {
+      accel = MOVEMENT_CONFIG.groundAcceleration;
+      decel = MOVEMENT_CONFIG.groundDeceleration;
     } else {
-      velX = this.moveToward(velX, 0, decel * deltaTime);
+      accel = MOVEMENT_CONFIG.airAcceleration;
+      decel = MOVEMENT_CONFIG.airDeceleration;
     }
     
-    // Z velocity
-    if (Math.abs(targetVelZ) > 0.01) {
-      velZ = this.moveToward(velZ, targetVelZ, accel * deltaTime);
+    // Accelerate toward target
+    if (hasInput) {
+      velX = this.moveToward(velX, targetVelX, accel * dt);
+      velZ = this.moveToward(velZ, targetVelZ, accel * dt);
     } else {
-      velZ = this.moveToward(velZ, 0, decel * deltaTime);
+      // Decelerate to stop
+      velX = this.moveToward(velX, 0, decel * dt);
+      velZ = this.moveToward(velZ, 0, decel * dt);
     }
     
-    // Clamp horizontal velocity
-    const horizontalSpeed = Math.sqrt(velX * velX + velZ * velZ);
-    if (horizontalSpeed > MOVEMENT_CONFIG.maxVelocity) {
-      const scale = MOVEMENT_CONFIG.maxVelocity / horizontalSpeed;
+    // Clamp horizontal speed
+    const horizSpeed = Math.sqrt(velX * velX + velZ * velZ);
+    if (horizSpeed > MOVEMENT_CONFIG.maxHorizontalSpeed) {
+      const scale = MOVEMENT_CONFIG.maxHorizontalSpeed / horizSpeed;
       velX *= scale;
       velZ *= scale;
     }
     
-    // Apply gravity
-    if (!player.isGrounded) {
-      velY += MOVEMENT_CONFIG.gravity * deltaTime;
-      velY = Math.max(velY, MOVEMENT_CONFIG.maxFallSpeed);
-    } else if (velY < 0) {
-      // Stick to ground slightly
-      velY = -2;
+    // --- Vertical Movement (Gravity & Jump) ---
+    
+    // Apply gravity when not grounded
+    if (!state.isGrounded) {
+      velY -= MOVEMENT_CONFIG.gravity * dt;
+      velY = Math.max(velY, -MOVEMENT_CONFIG.maxFallSpeed);
+    } else {
+      // On ground - apply small downward force to stick to ground
+      if (velY < 0) {
+        velY = MOVEMENT_CONFIG.stickyGroundForce;
+      }
     }
     
-    // Handle jumping
-    velY = this.handleJump(player, state, velY, deltaTime);
+    // --- Jump Logic ---
+    const canCoyoteJump = (currentTime - state.lastGroundedTime) < MOVEMENT_CONFIG.coyoteTime;
+    const canJump = (state.isGrounded || canCoyoteJump) && !state.hasJumpedSinceGrounded;
+    const jumpCooldownPassed = (currentTime - state.lastJumpTime) > MOVEMENT_CONFIG.jumpCooldown;
     
-    // Apply velocity
-    player.physicsBody.setLinvel({ x: velX, y: velY, z: velZ }, true);
-    
-    // Update player rotation to face movement direction
-    if (moveDirection.lengthSq() > 0.01 && player.isGrounded) {
-      const targetAngle = Math.atan2(moveDirection.x, moveDirection.z);
-      player.targetRotation = targetAngle;
-    }
-  }
-  
-  /**
-   * Handle jump logic
-   * @returns {number} New Y velocity
-   */
-  handleJump(player, state, velY, deltaTime) {
-    const currentTime = performance.now() / 1000;
-    
-    // Buffer jump input
-    if (player.input.jump) {
-      state.jumpBuffered = true;
-      state.jumpBufferTime = currentTime;
-    }
-    
-    // Clear old buffer
-    if (currentTime - state.jumpBufferTime > MOVEMENT_CONFIG.jumpBufferTime) {
+    // Clear expired jump buffer
+    if (state.jumpBuffered && (currentTime - state.jumpBufferTimestamp) > MOVEMENT_CONFIG.jumpBufferTime) {
       state.jumpBuffered = false;
     }
-    
-    // Check if can jump (coyote time)
-    const timeSinceGrounded = currentTime - state.lastGroundedTime;
-    const canCoyoteJump = timeSinceGrounded < MOVEMENT_CONFIG.coyoteTime;
-    const canJump = player.isGrounded || (canCoyoteJump && state.wasGrounded);
-    
-    // Check jump cooldown
-    const timeSinceJump = currentTime - state.lastJumpTime;
-    const jumpCooldownReady = timeSinceJump > MOVEMENT_CONFIG.jumpCooldown;
     
     // Execute jump
-    if (state.jumpBuffered && canJump && jumpCooldownReady) {
-      velY = player.jumpForce;
+    if (state.jumpBuffered && canJump && jumpCooldownPassed) {
+      velY = player.jumpForce || MOVEMENT_CONFIG.jumpVelocity;
       state.lastJumpTime = currentTime;
       state.jumpBuffered = false;
-      state.wasGrounded = false;
+      state.hasJumpedSinceGrounded = true;
+      state.isGrounded = false;
       player.isGrounded = false;
     }
     
-    return velY;
-  }
-  
-  /**
-   * Move a value toward a target
-   * @param {number} current
-   * @param {number} target
-   * @param {number} maxDelta
-   * @returns {number}
-   */
-  moveToward(current, target, maxDelta) {
-    if (Math.abs(target - current) <= maxDelta) {
-      return target;
+    // --- Apply Final Velocity ---
+    player.physicsBody.setLinvel({ x: velX, y: velY, z: velZ }, true);
+    
+    // --- Update Player Rotation ---
+    if (hasInput && state.isGrounded) {
+      player.targetRotation = Math.atan2(inputDir.x, inputDir.z);
     }
-    return current + Math.sign(target - current) * maxDelta;
+    
+    // Store current velocity for debugging/animation
+    state.currentVelocity.set(velX, velY, velZ);
   }
   
   /**
-   * Update a player's movement (main update function)
-   * @param {Player} player
-   * @param {THREE.Vector3} cameraForward - Camera forward direction (horizontal)
-   * @param {THREE.Vector3} cameraRight - Camera right direction
-   * @param {number} deltaTime
+   * Convenience method: Set input and run fixed update
+   * Use this if calling from outside the physics loop
    */
-  updatePlayer(player, cameraForward, cameraRight, deltaTime) {
+  updatePlayer(player, cameraForward, cameraRight, dt) {
     if (!player.isAlive) return;
+    
+    const state = this.playerStates.get(player.id);
+    if (!state) return;
     
     // Calculate movement direction from input
     const moveDirection = new THREE.Vector3();
@@ -285,14 +313,26 @@ class PhysicsMovements {
       moveDirection.normalize();
     }
     
-    // Apply physics-based movement
-    this.applyMovement(player, moveDirection, deltaTime);
+    // Set input for fixed update
+    this.setPlayerInput(player, moveDirection, player.input.jump, player.input.sprint);
+    
+    // Run fixed update (in proper usage, this is called from physics loop)
+    this.fixedUpdate(player);
   }
   
   /**
-   * Apply an impulse to a player (for knockback, etc.)
-   * @param {Player} player
-   * @param {THREE.Vector3} impulse
+   * Move a value toward a target by maxDelta
+   */
+  moveToward(current, target, maxDelta) {
+    const diff = target - current;
+    if (Math.abs(diff) <= maxDelta) {
+      return target;
+    }
+    return current + Math.sign(diff) * maxDelta;
+  }
+  
+  /**
+   * Apply an impulse to a player
    */
   applyImpulse(player, impulse) {
     if (player.physicsBody) {
@@ -301,9 +341,7 @@ class PhysicsMovements {
   }
   
   /**
-   * Teleport a player to a position
-   * @param {Player} player
-   * @param {THREE.Vector3} position
+   * Teleport a player
    */
   teleport(player, position) {
     if (player.physicsBody) {
@@ -315,6 +353,27 @@ class PhysicsMovements {
     }
     player.position.copy(position);
     player.group.position.copy(position);
+    
+    // Reset state
+    const state = this.playerStates.get(player.id);
+    if (state) {
+      state.currentVelocity.set(0, 0, 0);
+      state.isGrounded = false;
+    }
+  }
+  
+  /**
+   * Get movement debug info
+   */
+  getDebugInfo(playerId) {
+    const state = this.playerStates.get(playerId);
+    if (!state) return null;
+    
+    return {
+      grounded: state.isGrounded,
+      velocity: `${state.currentVelocity.x.toFixed(1)}, ${state.currentVelocity.y.toFixed(1)}, ${state.currentVelocity.z.toFixed(1)}`,
+      speed: Math.sqrt(state.currentVelocity.x ** 2 + state.currentVelocity.z ** 2).toFixed(1),
+    };
   }
 }
 

@@ -238,8 +238,9 @@ class Player {
     // Create a dynamic rigid body
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(this.position.x, this.position.y + this.height / 2, this.position.z)
-      .setLinearDamping(0.5)
-      .setAngularDamping(1.0);
+      .setLinearDamping(0.0)      // No damping - we control velocity directly
+      .setAngularDamping(1.0)
+      .setCcdEnabled(true);       // Continuous collision detection for fast movement
     
     // Lock rotations so player doesn't tumble
     bodyDesc.lockRotations();
@@ -249,19 +250,22 @@ class Player {
     // Create capsule collider
     const halfHeight = (this.height - this.radius * 2) / 2;
     const colliderDesc = RAPIER.ColliderDesc.capsule(halfHeight, this.radius)
-      .setFriction(0.5)
-      .setRestitution(0.0);
+      .setFriction(0.0)           // No friction - we handle movement ourselves
+      .setRestitution(0.0);       // No bounce
     
     this.collider = physicsWorld.createCollider(colliderDesc, this.physicsBody);
     
-    // Create debug wireframe for the capsule collider
-    const capsuleCenter = new THREE.Vector3(
-      this.position.x,
-      this.position.y + this.height / 2,
-      this.position.z
+    // Create debug wireframe capsule (follows player via group)
+    this.debugCapsule = physicsMeshers.createDebugCapsule(
+      new THREE.Vector3(0, this.height / 2, 0),  // Local position in group
+      this.radius,
+      halfHeight
     );
-    this.debugMesh = physicsMeshers.createDebugCapsule(capsuleCenter, this.radius, halfHeight);
-    physicsMeshers.addDebugWireframe(this.debugMesh, `player_${this.name}`);
+    this.debugCapsule.visible = physicsMeshers.debugVisible;
+    this.group.add(this.debugCapsule);
+    
+    // Register with physicsMeshers so visibility toggle works
+    physicsMeshers.debugMeshes.push(this.debugCapsule);
   }
   
   /**
@@ -279,11 +283,6 @@ class Player {
         { x: x, y: y + this.height / 2, z: z },
         true
       );
-    }
-    
-    // Update debug wireframe position
-    if (this.debugMesh) {
-      this.debugMesh.position.set(x, y + this.height / 2, z);
     }
   }
   
@@ -368,11 +367,6 @@ class Player {
       // Get velocity
       const linvel = this.physicsBody.linvel();
       this.velocity.set(linvel.x, linvel.y, linvel.z);
-      
-      // Sync debug wireframe position with physics body
-      if (this.debugMesh) {
-        this.debugMesh.position.set(translation.x, translation.y, translation.z);
-      }
     }
     
     // Smooth rotation

@@ -361,7 +361,7 @@ class PhysicsMeshers {
     
     const isStatic = options.isStatic ?? true;
     const friction = options.friction ?? 0.5;
-    const restitution = options.restitution ?? 0.2;
+    const restitution = options.restitution ?? 0.0;  // No bounce
     
     // Get world position and scale
     mesh.updateMatrixWorld(true);
@@ -427,7 +427,7 @@ class PhysicsMeshers {
     
     const y = options.y ?? 0;
     const friction = options.friction ?? 0.7;
-    const restitution = options.restitution ?? 0.1;
+    const restitution = options.restitution ?? 0.0;  // No bounce!
     
     // Create static body at ground level
     const bodyDesc = RAPIER.RigidBodyDesc.fixed();

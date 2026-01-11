@@ -76,7 +76,7 @@ const CONFIG = {
     cameraSize: 100
   },
   physics: {
-    gravity: { x: 0, y: -9.81, z: 0 }
+    gravity: { x: 0, y: 0, z: 0 }  // Disabled - custom gravity in physicsmovements.js
   },
   game: {
     numGargoyles: 3,
@@ -301,6 +301,7 @@ async function initPhysics() {
   GAME.physics.initialized = true;
   
   physicsMeshers.setWorld(GAME.physics.world);
+  physicsMeshers.setScene(GAME.scene);
   physicsMovements.init(GAME.physics.world, RAPIER);
   
   console.log('Rapier physics initialized');
@@ -316,7 +317,6 @@ function initControls() {
           gameMap.toggleDebug();
           const showDebug = !hud.config.showDebug;
           hud.setConfig('showDebug', showDebug);
-          hud.setConfig('showFPS', showDebug);
         }
         break;
       case 'togglePause':
@@ -342,7 +342,8 @@ function initControls() {
   
   GAME.renderer.domElement.addEventListener('wheel', (e) => {
     if (GAME.state === GameState.PLAYING) {
-      gameCamera.zoom(e.deltaY * -0.01);
+      // Scroll up = zoom in (negative deltaY), scroll down = zoom out (positive deltaY)
+      gameCamera.zoom(-e.deltaY * 0.01);
     }
   });
   
@@ -393,7 +394,7 @@ function initHUD() {
 
 function initCamera() {
   gameCamera.init(GAME.camera);
-  gameCamera.setMode(CameraMode.THIRD_PERSON);
+  gameCamera.setMode(CameraMode.ORBIT);
   console.log('Camera system initialized');
 }
 
@@ -515,6 +516,16 @@ async function createGargoyles() {
 // GAME LOOP
 // ============================================
 
+// Cached input state for physics loop
+const cachedInput = {
+  forward: 0,
+  right: 0,
+  jump: false,
+  sprint: false,
+  cameraForward: new THREE.Vector3(),
+  cameraRight: new THREE.Vector3()
+};
+
 function gameLoop() {
   if (!GAME.isRunning) return;
   
@@ -524,8 +535,12 @@ function gameLoop() {
   
   // Only step physics when playing
   if (GAME.state === GameState.PLAYING) {
+    // Cache input BEFORE physics loop (input is sampled once per frame)
+    cachePlayerInput();
+    
+    // Run physics at fixed timestep
     while (chronograph.shouldUpdatePhysics()) {
-      updatePhysics(chronograph.fixedTimeStep);
+      fixedUpdate(chronograph.fixedTimeStep);
     }
   }
   
@@ -533,16 +548,110 @@ function gameLoop() {
   render();
 }
 
-function updatePhysics(dt) {
-  if (GAME.physics.initialized) {
-    GAME.physics.world.step();
+/**
+ * Cache player input for use in fixed physics updates
+ * This ensures consistent input across all physics steps in a frame
+ * Also updates AI to set their input before physics runs
+ */
+function cachePlayerInput() {
+  const localPlayer = playerRegistry.getLocalPlayer();
+  const isFreeCam = gameCamera.isFreeCam();
+  
+  // Cache local player input
+  if (localPlayer && controls.mouse.locked && !isFreeCam) {
+    cachedInput.forward = controls.movement.forward;
+    cachedInput.right = controls.movement.right;
+    cachedInput.jump = controls.movement.jump;
+    cachedInput.sprint = controls.movement.sprint;
+    cachedInput.cameraForward.copy(gameCamera.getForwardDirection());
+    cachedInput.cameraRight.copy(gameCamera.getRightDirection());
+  } else {
+    cachedInput.forward = 0;
+    cachedInput.right = 0;
+    cachedInput.jump = false;
+    cachedInput.sprint = false;
   }
+  
+  // Update AI to set gargoyle input (must happen before physics loop)
+  computerPlayer.update(chronograph.deltaTime, GAME.obstacles);
+}
+
+/**
+ * Fixed timestep update - runs at consistent 60Hz
+ * All physics and movement happens here
+ */
+function fixedUpdate(dt) {
+  if (!GAME.physics.initialized) return;
+  
+  const localPlayer = playerRegistry.getLocalPlayer();
+  const isFreeCam = gameCamera.isFreeCam();
+  
+  // Update player movement (uses cached input)
+  if (localPlayer && !isFreeCam) {
+    // Set input on player
+    localPlayer.input.forward = cachedInput.forward;
+    localPlayer.input.right = cachedInput.right;
+    localPlayer.input.jump = cachedInput.jump;
+    localPlayer.input.sprint = cachedInput.sprint;
+    
+    // Calculate movement direction from input
+    const moveDirection = new THREE.Vector3();
+    if (cachedInput.forward !== 0 || cachedInput.right !== 0) {
+      moveDirection.addScaledVector(cachedInput.cameraForward, cachedInput.forward);
+      moveDirection.addScaledVector(cachedInput.cameraRight, cachedInput.right);
+      moveDirection.normalize();
+    }
+    
+    // Set input for physics system
+    physicsMovements.setPlayerInput(
+      localPlayer,
+      moveDirection,
+      cachedInput.jump,
+      cachedInput.sprint
+    );
+    
+    // Run fixed update for player
+    physicsMovements.fixedUpdate(localPlayer);
+  }
+  
+  // Update AI gargoyles
+  const gargoyles = playerRegistry.getGargoyles();
+  for (const gargoyle of gargoyles) {
+    if (!gargoyle.isFrozen && gargoyle.isAlive) {
+      // AI sets input via computerPlayer.update() before physics loop
+      // Convert player.input to movement direction (AI faces movement direction)
+      const aiForward = new THREE.Vector3(
+        Math.sin(gargoyle.targetRotation),
+        0,
+        Math.cos(gargoyle.targetRotation)
+      ).normalize();
+      
+      const moveDirection = new THREE.Vector3();
+      if (gargoyle.input.forward !== 0) {
+        moveDirection.addScaledVector(aiForward, gargoyle.input.forward);
+        moveDirection.normalize();
+      }
+      
+      // Set input for physics
+      physicsMovements.setPlayerInput(
+        gargoyle,
+        moveDirection,
+        gargoyle.input.jump,
+        gargoyle.input.sprint
+      );
+      
+      // Run fixed update
+      physicsMovements.fixedUpdate(gargoyle);
+    }
+  }
+  
+  // Step the physics world
+  GAME.physics.world.step();
 }
 
 function update(dt) {
-  // Update HUD
+  // Update HUD (Stats panel updates FPS automatically)
   hud.update(dt);
-  hud.updateFPS(chronograph.fps);
   
   // Only update gameplay when playing
   if (GAME.state !== GameState.PLAYING) {
@@ -555,19 +664,19 @@ function update(dt) {
   const mouseDelta = controls.getMouseDelta();
   gameCamera.handleMouseInput(mouseDelta.x, mouseDelta.y);
   
+  // Check if in free camera mode
+  const isFreeCam = gameCamera.isFreeCam();
+  
+  // Update camera mode indicator
+  hud.setCameraMode(isFreeCam);
+  
+  // Always update camera with movement (for free cam mode)
+  gameCamera.update(dt, controls.movement);
+  
   const localPlayer = playerRegistry.getLocalPlayer();
-  if (localPlayer && controls.mouse.locked) {
-    localPlayer.input.forward = controls.movement.forward;
-    localPlayer.input.right = controls.movement.right;
-    localPlayer.input.jump = controls.movement.jump;
-    localPlayer.input.sprint = controls.movement.sprint;
-    localPlayer.input.crouch = controls.movement.crouch;
-    
-    const cameraForward = gameCamera.getForwardDirection();
-    const cameraRight = gameCamera.getRightDirection();
-    
-    physicsMovements.updatePlayer(localPlayer, cameraForward, cameraRight, dt);
-    
+  
+  // Only update player-related gameplay when NOT in free cam mode
+  if (localPlayer && controls.mouse.locked && !isFreeCam) {
     // Check trophy collection
     trophies.checkCollection(localPlayer.position);
     
@@ -608,29 +717,7 @@ function update(dt) {
     }
   }
   
-  // Update AI
-  computerPlayer.update(dt, GAME.obstacles);
-  
-  // Update physics movement for AI-controlled gargoyles
-  const gargoyles = playerRegistry.getGargoyles();
-  for (const gargoyle of gargoyles) {
-    if (!gargoyle.isFrozen && gargoyle.isAlive) {
-      const aiForward = new THREE.Vector3(
-        Math.sin(gargoyle.rotation.y),
-        0,
-        Math.cos(gargoyle.rotation.y)
-      ).normalize();
-      const aiRight = new THREE.Vector3(
-        Math.cos(gargoyle.rotation.y),
-        0,
-        -Math.sin(gargoyle.rotation.y)
-      ).normalize();
-      
-      physicsMovements.updatePlayer(gargoyle, aiForward, aiRight, dt);
-    }
-  }
-  
-  // Update all players
+  // Update all players (visual updates, animations, sync from physics)
   playerRegistry.updateAll(dt);
   
   // Update trophies animation
@@ -641,14 +728,19 @@ function update(dt) {
   
   // Update debug info
   if (hud.config.showDebug) {
+    const allGargoyles = playerRegistry.getGargoyles();
+    const movementInfo = localPlayer ? physicsMovements.getDebugInfo(localPlayer.id) : null;
+    
     const debugInfo = {
       'Position': `${localPlayer?.position.x.toFixed(1)}, ${localPlayer?.position.y.toFixed(1)}, ${localPlayer?.position.z.toFixed(1)}`,
+      'Velocity': movementInfo?.velocity || 'N/A',
+      'Speed': movementInfo?.speed || 'N/A',
+      'Grounded': movementInfo?.grounded ?? localPlayer?.isGrounded,
       'State': localPlayer?.state,
-      'Grounded': localPlayer?.isGrounded,
-      'Gargoyles Frozen': gargoyles.filter(g => g.isFrozen).length + '/' + gargoyles.length
+      'Gargoyles Frozen': allGargoyles.filter(g => g.isFrozen).length + '/' + allGargoyles.length
     };
     
-    for (const gargoyle of gargoyles) {
+    for (const gargoyle of allGargoyles) {
       const aiInfo = computerPlayer.getDebugInfo(gargoyle.id);
       if (aiInfo) {
         debugInfo[gargoyle.name] = `${aiInfo.state}${gargoyle.isFrozen ? ' [FROZEN]' : ''}`;

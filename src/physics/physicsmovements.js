@@ -82,11 +82,27 @@ class PhysicsMovements {
     const rayDir = { x: 0, y: -1, z: 0 };
     
     // Distance = half height + ground check distance
+    // half height is distance from capsule center to bottom of capsule
     const halfHeight = player.height / 2;
     const maxDist = halfHeight + PARAMS.groundCheckDist;
     
     const ray = new this.RAPIER.Ray(rayOrigin, rayDir);
     const hit = this.world.castRay(ray, maxDist, true, undefined, undefined, player.collider);
+    
+    // Store debug info
+    const state = this.players.get(player.id);
+    if (state) {
+      if (hit !== null) {
+        // hit.timeOfImpact is the distance along the ray where it hit
+        state.groundHitDist = hit.timeOfImpact;
+        // Gap = distance to ground - expected distance (halfHeight)
+        // Positive gap means floating above ground
+        state.groundGap = hit.timeOfImpact - halfHeight;
+      } else {
+        state.groundHitDist = null;
+        state.groundGap = null;
+      }
+    }
     
     return hit !== null;
   }
@@ -141,8 +157,18 @@ class PhysicsMovements {
     
     // --- Vertical Movement ---
     if (state.isGrounded) {
-      // On ground - zero out falling velocity (don't fight Rapier)
-      if (velY < 0) velY = 0;
+      // On ground - apply small downward velocity to keep player pressed against ground
+      // This prevents floating when ground check detects ground but player isn't actually touching
+      const groundHugVelocity = -2;  // Small constant downward velocity when grounded
+      
+      if (velY < groundHugVelocity) {
+        // If falling faster than ground hug, zero it out (we hit ground)
+        velY = groundHugVelocity;
+      } else if (velY <= 0) {
+        // Apply ground hug to keep pressed against ground
+        velY = groundHugVelocity;
+      }
+      // If velY > 0, player is jumping, don't interfere
       
       // Jump
       if (wantJump && state.canJump) {
@@ -218,6 +244,8 @@ class PhysicsMovements {
       grounded: state.isGrounded,
       velocity: `${state.velocity.x.toFixed(1)}, ${state.velocity.y.toFixed(1)}, ${state.velocity.z.toFixed(1)}`,
       speed: Math.sqrt(state.velocity.x ** 2 + state.velocity.z ** 2).toFixed(1),
+      groundGap: state.groundGap !== null ? state.groundGap.toFixed(3) : 'N/A',
+      groundHitDist: state.groundHitDist !== null ? state.groundHitDist.toFixed(3) : 'N/A',
     };
   }
   

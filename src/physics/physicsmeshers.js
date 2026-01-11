@@ -103,99 +103,80 @@ class PhysicsMeshers {
   
   /**
    * Create debug wireframe capsule (for player colliders)
-   * @param {THREE.Vector3} position - Center position
+   * Uses THREE.CapsuleGeometry + WireframeGeometry for accurate representation
+   * (same approach as building trimesh debug)
+   * 
+   * @param {THREE.Vector3} position - Center position of the capsule
    * @param {number} radius - Capsule radius
-   * @param {number} halfHeight - Half height of cylindrical part
+   * @param {number} halfHeight - Half height of cylindrical part (NOT total height)
    * @returns {THREE.Group}
    */
   createDebugCapsule(position, radius, halfHeight) {
     const group = new THREE.Group();
     group.name = 'debug_capsule';
     
-    // Vertical edge lines (8 lines around cylinder)
-    for (let i = 0; i < 8; i++) {
-      const angle = (i / 8) * Math.PI * 2;
-      const x = radius * Math.cos(angle);
-      const z = radius * Math.sin(angle);
-      
-      const lineGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(x, -halfHeight, z),
-        new THREE.Vector3(x, halfHeight, z)
-      ]);
-      const line = new THREE.Line(lineGeom, DEBUG_MATERIAL);
-      group.add(line);
-    }
+    // THREE.CapsuleGeometry takes:
+    // - radius: capsule radius
+    // - length: length of the cylindrical middle section (2 * halfHeight)
+    // - capSegments: number of segments for the caps
+    // - radialSegments: number of segments around the circumference
+    const cylinderLength = halfHeight * 2;
+    const capsuleGeom = new THREE.CapsuleGeometry(radius, cylinderLength, 8, 16);
     
-    // Horizontal rings (bottom, middle, top of cylinder)
-    const ringYPositions = [-halfHeight, 0, halfHeight];
-    for (const y of ringYPositions) {
-      const ringPoints = [];
-      for (let i = 0; i <= 32; i++) {
-        const angle = (i / 32) * Math.PI * 2;
-        ringPoints.push(new THREE.Vector3(
-          radius * Math.cos(angle),
-          y,
-          radius * Math.sin(angle)
-        ));
-      }
-      const ringGeom = new THREE.BufferGeometry().setFromPoints(ringPoints);
-      const ring = new THREE.Line(ringGeom, DEBUG_MATERIAL);
-      group.add(ring);
-    }
+    // Use WireframeGeometry like we do for buildings (shows all triangle edges)
+    const wireframeGeom = new THREE.WireframeGeometry(capsuleGeom);
+    const wireframe = new THREE.LineSegments(wireframeGeom, DEBUG_MATERIAL);
+    group.add(wireframe);
     
-    // Top hemisphere arcs (bulging UP from cylinder top)
-    // Arc in X-Y plane
-    const topArc1Points = [];
-    for (let i = 0; i <= 16; i++) {
-      const angle = (i / 16) * Math.PI;  // 0 to PI
-      topArc1Points.push(new THREE.Vector3(
-        radius * Math.cos(angle),
-        halfHeight + radius * Math.sin(angle),
-        0
-      ));
-    }
-    const topArc1Geom = new THREE.BufferGeometry().setFromPoints(topArc1Points);
-    group.add(new THREE.Line(topArc1Geom, DEBUG_MATERIAL));
+    // Dispose the source geometry (wireframe has its own copy)
+    capsuleGeom.dispose();
     
-    // Arc in Z-Y plane
-    const topArc2Points = [];
-    for (let i = 0; i <= 16; i++) {
-      const angle = (i / 16) * Math.PI;
-      topArc2Points.push(new THREE.Vector3(
-        0,
-        halfHeight + radius * Math.sin(angle),
-        radius * Math.cos(angle)
-      ));
-    }
-    const topArc2Geom = new THREE.BufferGeometry().setFromPoints(topArc2Points);
-    group.add(new THREE.Line(topArc2Geom, DEBUG_MATERIAL));
+    // Add marker spheres to help debug positioning
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+    const markerMaterialBlue = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+    const markerMaterialYellow = new THREE.MeshBasicMaterial({ color: 0xffff00 });
     
-    // Bottom hemisphere arcs (bulging DOWN from cylinder bottom)
-    // Arc in X-Y plane
-    const bottomArc1Points = [];
-    for (let i = 0; i <= 16; i++) {
-      const angle = (i / 16) * Math.PI;
-      bottomArc1Points.push(new THREE.Vector3(
-        radius * Math.cos(angle),
-        -halfHeight - radius * Math.sin(angle),
-        0
-      ));
-    }
-    const bottomArc1Geom = new THREE.BufferGeometry().setFromPoints(bottomArc1Points);
-    group.add(new THREE.Line(bottomArc1Geom, DEBUG_MATERIAL));
+    // Center marker (RED) - should be at capsule center
+    const centerMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 8, 8),
+      markerMaterial
+    );
+    centerMarker.position.set(0, 0, 0);
+    group.add(centerMarker);
     
-    // Arc in Z-Y plane
-    const bottomArc2Points = [];
-    for (let i = 0; i <= 16; i++) {
-      const angle = (i / 16) * Math.PI;
-      bottomArc2Points.push(new THREE.Vector3(
-        0,
-        -halfHeight - radius * Math.sin(angle),
-        radius * Math.cos(angle)
-      ));
-    }
-    const bottomArc2Geom = new THREE.BufferGeometry().setFromPoints(bottomArc2Points);
-    group.add(new THREE.Line(bottomArc2Geom, DEBUG_MATERIAL));
+    // Bottom marker (BLUE) - should be at feet level (bottom of capsule)
+    const bottomY = -(halfHeight + radius);
+    const bottomMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 8, 8),
+      markerMaterialBlue
+    );
+    bottomMarker.position.set(0, bottomY, 0);
+    group.add(bottomMarker);
+    
+    // Top marker (YELLOW) - should be at top of capsule
+    const topY = halfHeight + radius;
+    const topMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 8, 8),
+      markerMaterialYellow
+    );
+    topMarker.position.set(0, topY, 0);
+    group.add(topMarker);
+    
+    // Ground reference line (shows where Y=0 is relative to capsule center)
+    // This draws a horizontal line at Y = -position.y (which should be ground if position.y = height/2)
+    const groundRefPoints = [
+      new THREE.Vector3(-radius * 1.5, -position.y, 0),
+      new THREE.Vector3(radius * 1.5, -position.y, 0)
+    ];
+    const groundRefGeom = new THREE.BufferGeometry().setFromPoints(groundRefPoints);
+    const groundRefMaterial = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 });
+    const groundRef = new THREE.Line(groundRefGeom, groundRefMaterial);
+    group.add(groundRef);
+    
+    // Log capsule dimensions for debugging
+    console.log(`[Debug Capsule] radius=${radius.toFixed(3)}, halfHeight=${halfHeight.toFixed(3)}, totalHeight=${(2*halfHeight + 2*radius).toFixed(3)}`);
+    console.log(`[Debug Capsule] center local Y=0, bottom local Y=${bottomY.toFixed(3)}, top local Y=${topY.toFixed(3)}`);
+    console.log(`[Debug Capsule] positioned at local (${position.x}, ${position.y}, ${position.z}) in parent group`);
     
     group.position.copy(position);
     group.visible = this.debugVisible;
@@ -429,25 +410,75 @@ class PhysicsMeshers {
     const friction = options.friction ?? 0.7;
     const restitution = options.restitution ?? 0.0;  // No bounce!
     
+    // Ground collider is a thin box
+    // Center is at y - 0.05, half-height is 0.05
+    // So top surface is at: (y - 0.05) + 0.05 = y
+    const groundThickness = 0.05;
+    const groundCenterY = y - groundThickness;
+    
     // Create static body at ground level
     const bodyDesc = RAPIER.RigidBodyDesc.fixed();
-    bodyDesc.setTranslation(0, y - 0.05, 0);
+    bodyDesc.setTranslation(0, groundCenterY, 0);
     
     const body = this.world.createRigidBody(bodyDesc);
     
     // Create thin box collider for ground
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, 0.05, halfDepth);
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, groundThickness, halfDepth);
     colliderDesc.setFriction(friction);
     colliderDesc.setRestitution(restitution);
     
     const collider = this.world.createCollider(colliderDesc, body);
     
-    // Create and add debug wireframe
-    const debugWireframe = this.createDebugBox(
-      new THREE.Vector3(0, y - 0.05, 0),
-      { x: halfWidth, y: 0.05, z: halfDepth }
+    // Create debug group with wireframe and surface markers
+    const debugGroup = new THREE.Group();
+    debugGroup.name = 'debug_ground';
+    
+    // Main ground box wireframe
+    const boxGeom = new THREE.BoxGeometry(halfWidth * 2, groundThickness * 2, halfDepth * 2);
+    const edges = new THREE.EdgesGeometry(boxGeom);
+    const wireframe = new THREE.LineSegments(edges, DEBUG_MATERIAL);
+    wireframe.position.set(0, groundCenterY, 0);
+    debugGroup.add(wireframe);
+    boxGeom.dispose();
+    
+    // Add surface level marker (CYAN cross at y=0, showing actual collision surface)
+    const surfaceY = y;  // Top of ground collider
+    const surfaceMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+    
+    // Cross at origin showing ground surface level
+    const crossSize = 2;
+    const crossPoints1 = [
+      new THREE.Vector3(-crossSize, surfaceY + 0.01, 0),
+      new THREE.Vector3(crossSize, surfaceY + 0.01, 0)
+    ];
+    const crossPoints2 = [
+      new THREE.Vector3(0, surfaceY + 0.01, -crossSize),
+      new THREE.Vector3(0, surfaceY + 0.01, crossSize)
+    ];
+    const cross1 = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(crossPoints1),
+      surfaceMaterial
     );
-    this.addDebugWireframe(debugWireframe, 'ground');
+    const cross2 = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(crossPoints2),
+      surfaceMaterial
+    );
+    debugGroup.add(cross1);
+    debugGroup.add(cross2);
+    
+    // Add small sphere at origin at surface level (CYAN)
+    const surfaceMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0x00ffff })
+    );
+    surfaceMarker.position.set(0, surfaceY + 0.01, 0);
+    debugGroup.add(surfaceMarker);
+    
+    debugGroup.visible = this.debugVisible;
+    this.addDebugWireframe(debugGroup, 'ground');
+    
+    // Log ground info
+    console.log(`[Ground Plane] centerY=${groundCenterY.toFixed(3)}, thickness=${groundThickness}, surfaceY=${surfaceY.toFixed(3)}`);
     
     return { body, colliders: [collider] };
   }

@@ -671,12 +671,33 @@ function update(dt) {
     const allGargoyles = playerRegistry.getGargoyles();
     const movementInfo = localPlayer ? physicsMovements.getDebugInfo(localPlayer.id) : null;
     
+    // Get physics body position for comparison
+    let physicsY = 'N/A';
+    let feetY = 'N/A';
+    let distFromGround = 'N/A';
+    if (localPlayer?.physicsBody) {
+      const trans = localPlayer.physicsBody.translation();
+      physicsY = trans.y.toFixed(3);
+      // Feet position = physics center - height/2
+      const feet = trans.y - localPlayer.height / 2;
+      feetY = feet.toFixed(3);
+      // Ground is at Y=0, so distance = feetY - 0
+      distFromGround = feet.toFixed(3);
+    }
+    
     const debugInfo = {
-      'Position': `${localPlayer?.position.x.toFixed(1)}, ${localPlayer?.position.y.toFixed(1)}, ${localPlayer?.position.z.toFixed(1)}`,
+      'Pos (feet)': `${localPlayer?.position.x.toFixed(2)}, ${localPlayer?.position.y.toFixed(3)}, ${localPlayer?.position.z.toFixed(2)}`,
+      'Physics Y': physicsY,
+      'Feet Y': feetY,
+      'Dist from ground': distFromGround,
+      'Ground Gap': movementInfo?.groundGap || 'N/A',
+      'Ground Hit': movementInfo?.groundHitDist || 'N/A',
       'Velocity': movementInfo?.velocity || 'N/A',
       'Speed': movementInfo?.speed || 'N/A',
       'Grounded': movementInfo?.grounded ?? localPlayer?.isGrounded,
       'State': localPlayer?.state,
+      'Height': localPlayer?.height?.toFixed(2) || 'N/A',
+      'Radius': localPlayer?.radius?.toFixed(2) || 'N/A',
       'Gargoyles Frozen': allGargoyles.filter(g => g.isFrozen).length + '/' + allGargoyles.length
     };
     

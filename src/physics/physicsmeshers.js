@@ -11,6 +11,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
+import { DEBUG } from '../utilities/palette.js';
 
 // Collider types
 export const ColliderType = {
@@ -24,9 +25,9 @@ export const ColliderType = {
   HEIGHTFIELD: 'heightfield'
 };
 
-// Debug wireframe material (shared, green)
+// Debug wireframe material (shared, green from palette)
 const DEBUG_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x00ff00,
+  color: DEBUG.wireframe,
   linewidth: 1,
   transparent: true,
   opacity: 0.8
@@ -131,10 +132,10 @@ class PhysicsMeshers {
     // Dispose the source geometry (wireframe has its own copy)
     capsuleGeom.dispose();
     
-    // Add marker spheres to help debug positioning
-    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-    const markerMaterialBlue = new THREE.MeshBasicMaterial({ color: 0x0000ff });
-    const markerMaterialYellow = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    // Add marker spheres to help debug positioning - colors from palette
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: DEBUG.origin });
+    const markerMaterialBlue = new THREE.MeshBasicMaterial({ color: DEBUG.capsuleBot });
+    const markerMaterialYellow = new THREE.MeshBasicMaterial({ color: DEBUG.capsuleTop });
     
     // Center marker (RED) - should be at capsule center
     const centerMarker = new THREE.Mesh(
@@ -169,7 +170,7 @@ class PhysicsMeshers {
       new THREE.Vector3(radius * 1.5, -position.y, 0)
     ];
     const groundRefGeom = new THREE.BufferGeometry().setFromPoints(groundRefPoints);
-    const groundRefMaterial = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 });
+    const groundRefMaterial = new THREE.LineBasicMaterial({ color: DEBUG.surface, linewidth: 2 });
     const groundRef = new THREE.Line(groundRefGeom, groundRefMaterial);
     group.add(groundRef);
     
@@ -443,7 +444,7 @@ class PhysicsMeshers {
     
     // Add surface level marker (CYAN cross at y=0, showing actual collision surface)
     const surfaceY = y;  // Top of ground collider
-    const surfaceMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+    const surfaceMaterial = new THREE.LineBasicMaterial({ color: DEBUG.surface, linewidth: 2 });
     
     // Cross at origin showing ground surface level
     const crossSize = 2;
@@ -469,7 +470,7 @@ class PhysicsMeshers {
     // Add small sphere at origin at surface level (CYAN)
     const surfaceMarker = new THREE.Mesh(
       new THREE.SphereGeometry(0.1, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0x00ffff })
+      new THREE.MeshBasicMaterial({ color: DEBUG.surface })
     );
     surfaceMarker.position.set(0, surfaceY + 0.01, 0);
     debugGroup.add(surfaceMarker);

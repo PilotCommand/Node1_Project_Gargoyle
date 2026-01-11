@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import Player, { PlayerState, PlayerType } from './player.js';
+import { PLAYERS } from '../utilities/palette.js';
 
 // Gargoyle-specific states
 export const GargoyleState = {
@@ -194,9 +195,9 @@ class GargoylePlayer extends Player {
             child.userData.originalMaterial = child.material;
           }
           
-          // Apply stone-like frozen material
+          // Apply stone-like frozen material - from palette
           child.material = new THREE.MeshStandardMaterial({
-            color: 0x555555,
+            color: PLAYERS.gargoyle.frozen,
             roughness: 1.0,
             metalness: 0.0
           });

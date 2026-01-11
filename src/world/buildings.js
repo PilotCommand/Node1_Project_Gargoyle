@@ -1,11 +1,12 @@
 /**
  * Buildings - Procedural building generator
- * Creates various building types with greyscale aesthetics
+ * Creates various building types with ash grey aesthetics
  */
 
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import physicsMeshers from '../physics/physicsmeshers.js';
+import { BUILDINGS, randomAshGrey, adjustBrightness } from '../utilities/palette.js';
 
 // Building configuration
 const BUILDING_CONFIG = {
@@ -20,9 +21,9 @@ const BUILDING_CONFIG = {
   // Floor settings
   floorHeight: 3,
   
-  // Greyscale color range (0x222222 to 0x888888)
-  minShade: 0x222222,
-  maxShade: 0x888888,
+  // Colors from palette
+  minShade: BUILDINGS.minShade,
+  maxShade: BUILDINGS.maxShade,
   
   // Detail settings
   windowRows: true,
@@ -56,14 +57,12 @@ class Buildings {
   }
   
   /**
-   * Generate a random greyscale color
+   * Generate a random ash grey color
+   * Uses the centralized palette function
    * @returns {number} Hex color
    */
   randomGreyscale() {
-    const min = 0x22;
-    const max = 0x88;
-    const shade = Math.floor(Math.random() * (max - min) + min);
-    return (shade << 16) | (shade << 8) | shade;
+    return randomAshGrey();
   }
   
   /**
@@ -443,9 +442,7 @@ class Buildings {
    * @returns {number}
    */
   adjustShade(color, amount) {
-    let shade = color & 0xFF;
-    shade = Math.max(0x11, Math.min(0xEE, shade + amount));
-    return (shade << 16) | (shade << 8) | shade;
+    return adjustBrightness(color, amount);
   }
   
   /**

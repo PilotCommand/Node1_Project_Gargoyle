@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
+import { ATMOSPHERE, LIGHTING } from './utilities/palette.js';
 import chronograph from './utilities/chronograph.js';
 import controls from './utilities/controls.js';
 import gameCamera, { CameraMode } from './utilities/camera.js';
@@ -61,14 +62,14 @@ const GAME = {
 // ============================================
 const CONFIG = {
   colors: {
-    background: 0x1a1a1a,
-    fog: 0x2a2a2a,
-    ambient: 0x404040,
-    directional: 0xffffff
+    background: ATMOSPHERE.sky,
+    fog: ATMOSPHERE.fog,
+    ambient: LIGHTING.ambient,
+    directional: LIGHTING.sun
   },
   fog: {
-    near: 20,
-    far: 200
+    near: ATMOSPHERE.fogNear,
+    far: ATMOSPHERE.fogFar
   },
   shadows: {
     enabled: true,

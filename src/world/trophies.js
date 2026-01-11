@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
+import { ACCENTS } from '../utilities/palette.js';
 
 // Trophy configuration
 const TROPHY_CONFIG = {
@@ -15,9 +16,9 @@ const TROPHY_CONFIG = {
   minDistanceBetween: 15,
   spawnHeight: 1,
   
-  // Visual settings
-  baseColor: 0xffdd44,      // Gold color
-  glowColor: 0xffffaa,
+  // Visual settings - from palette
+  baseColor: ACCENTS.gold,
+  glowColor: ACCENTS.goldGlow,
   size: 0.5,
   
   // Animation
@@ -116,10 +117,10 @@ class Trophies {
     // Star on top
     const starGeometry = new THREE.OctahedronGeometry(TROPHY_CONFIG.size * 0.25);
     const starMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
+      color: ACCENTS.white,
       roughness: 0.1,
       metalness: 1.0,
-      emissive: 0xffff00,
+      emissive: ACCENTS.star,
       emissiveIntensity: 0.3
     });
     const star = new THREE.Mesh(starGeometry, starMaterial);

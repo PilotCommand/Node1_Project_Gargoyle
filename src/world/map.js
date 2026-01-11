@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import physicsMeshers from '../physics/physicsmeshers.js';
 import buildings from './buildings.js';
+import { MAP, DARK } from '../utilities/palette.js';
 
 // Map configuration
 const MAP_CONFIG = {
@@ -14,17 +15,17 @@ const MAP_CONFIG = {
   size: 200,
   halfSize: 100,
   
-  // Ground
-  groundColor: 0x2a2a2a,
+  // Ground - from palette
+  groundColor: MAP.ground,
   
-  // Debug grid
+  // Debug grid - from palette
   gridDivisions: 50,
-  gridColorCenter: 0x444444,
-  gridColorLines: 0x333333,
+  gridColorCenter: MAP.grid.center,
+  gridColorLines: MAP.grid.lines,
   
-  // Bounds
+  // Bounds - from palette
   boundaryHeight: 10,
-  boundaryColor: 0x1a1a1a,
+  boundaryColor: MAP.boundaries,
   
   // City generation
   city: {
@@ -235,11 +236,12 @@ class GameMap {
    * Create street markings/visual guides
    */
   createStreets() {
-    const streetColor = 0x1f1f1f;
+    // Dark roads from palette - contrast with ash buildings
+    const streetColor = MAP.streets;
     const streetMaterial = new THREE.MeshStandardMaterial({
       color: streetColor,
-      roughness: 0.95,
-      metalness: 0.0
+      roughness: 0.9,
+      metalness: 0.1
     });
     
     const cityConfig = MAP_CONFIG.city;

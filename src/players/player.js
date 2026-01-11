@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import physicsMeshers from '../physics/physicsmeshers.js';
+import { PLAYERS } from '../utilities/palette.js';
 
 // Player states
 export const PlayerState = {
@@ -147,10 +148,13 @@ class Player {
    */
   createPlaceholder() {
     const geometry = new THREE.CapsuleGeometry(this.radius, this.height - this.radius * 2, 8, 16);
+    
+    // Use different colors based on player type from palette
+    const isGargoyle = this.type === 'gargoyle';
     const material = new THREE.MeshStandardMaterial({
-      color: 0xcccccc,
-      roughness: 0.5,
-      metalness: 0.3
+      color: isGargoyle ? PLAYERS.gargoyle.normal : PLAYERS.target,
+      roughness: isGargoyle ? 0.9 : 0.5,
+      metalness: isGargoyle ? 0.0 : 0.2
     });
     
     this.mesh = new THREE.Mesh(geometry, material);

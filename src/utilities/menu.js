@@ -664,4 +664,4 @@ class Menu {
 // Export singleton
 const menu = new Menu();
 export default menu;
-export { Menu, MenuState };
+export { Menu };

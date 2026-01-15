@@ -4,6 +4,8 @@
  * 
  * OPTIMIZED: Multi-pass mesh builder that eliminates internal faces
  * between adjacent land cells for ~70-80% geometry reduction.
+ * 
+ * NEW: Tracks center cell for each island (useful for road building)
  */
 
 import * as THREE from 'three';
@@ -47,6 +49,7 @@ const ISLANDS_CONFIG = {
     colors: {
       void: 0x330000,      // Dark red for void/canyon
       island: 0x003300,    // Dark green for island
+      center: 0xFF00FF,    // Magenta for island center cells
     }
   }
 };
@@ -70,6 +73,9 @@ class Islands {
     
     // Grid state: -1 = void/gap, 0+ = island index
     this.grid = null;
+    
+    // Set of center cell keys for quick lookup: "x,z"
+    this.centerCells = new Set();
     
     // The single merged ground mesh
     this.groundMesh = null;
@@ -140,6 +146,9 @@ class Islands {
     // Grow islands competitively
     this.growIslands();
     
+    // Calculate center cells for each island (NEW)
+    this.calculateCenterCells();
+    
     // Create the ground mesh (OPTIMIZED)
     this.createGroundMesh();
     
@@ -200,6 +209,7 @@ class Islands {
           seed: bestSeed,
           cells: [{ x: bestSeed.x, z: bestSeed.z }],
           frontier: [{ x: bestSeed.x, z: bestSeed.z }],
+          centerCell: null,  // Will be calculated after growth
         });
       }
     }
@@ -337,6 +347,72 @@ class Islands {
     
     console.log(`Growth complete after ${iterations} iterations`);
     console.log(`Cells: ${claimed} land, ${unclaimed} canyon (${(unclaimed / (gridSize * gridSize) * 100).toFixed(1)}% void)`);
+  }
+  
+  /**
+   * Calculate the center cell for each island
+   * Finds the cell closest to the geometric centroid
+   */
+  calculateCenterCells() {
+    this.centerCells.clear();
+    
+    for (const island of this.islands) {
+      if (island.cells.length === 0) continue;
+      
+      // Calculate centroid (average position)
+      let sumX = 0;
+      let sumZ = 0;
+      for (const cell of island.cells) {
+        sumX += cell.x;
+        sumZ += cell.z;
+      }
+      const centroidX = sumX / island.cells.length;
+      const centroidZ = sumZ / island.cells.length;
+      
+      // Find the cell closest to the centroid
+      let closestCell = island.cells[0];
+      let closestDist = Infinity;
+      
+      for (const cell of island.cells) {
+        const dist = Math.sqrt(
+          Math.pow(cell.x - centroidX, 2) +
+          Math.pow(cell.z - centroidZ, 2)
+        );
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestCell = cell;
+        }
+      }
+      
+      // Store on island object
+      island.centerCell = { x: closestCell.x, z: closestCell.z };
+      island.centroid = { x: centroidX, z: centroidZ };
+      
+      // Add to quick lookup set
+      this.centerCells.add(`${closestCell.x},${closestCell.z}`);
+      
+      console.log(`Island ${island.index}: center cell (${closestCell.x}, ${closestCell.z}), centroid (${centroidX.toFixed(1)}, ${centroidZ.toFixed(1)}), ${island.cells.length} cells`);
+    }
+  }
+  
+  /**
+   * Check if a cell is a center cell
+   * @param {number} x - Grid X coordinate
+   * @param {number} z - Grid Z coordinate
+   * @returns {boolean}
+   */
+  isCenterCell(x, z) {
+    return this.centerCells.has(`${x},${z}`);
+  }
+  
+  /**
+   * Get the center cell for a specific island
+   * @param {number} islandIndex
+   * @returns {object|null} { x, z } or null
+   */
+  getIslandCenterCell(islandIndex) {
+    const island = this.islands[islandIndex];
+    return island?.centerCell || null;
   }
   
   /**
@@ -763,6 +839,7 @@ class Islands {
   
   /**
    * Create a debug grid that colors cells by type
+   * Now includes magenta coloring for center cells
    */
   createDebugGrid() {
     const gridSize = ISLANDS_CONFIG.gridDivisions;
@@ -789,6 +866,12 @@ class Islands {
         opacity: debugConfig.opacity,
         side: THREE.DoubleSide,
       }),
+      center: new THREE.MeshBasicMaterial({
+        color: debugConfig.colors.center,
+        transparent: true,
+        opacity: 0.9,  // Slightly more visible
+        side: THREE.DoubleSide,
+      }),
     };
     
     // Shared geometry for all cells
@@ -799,7 +882,16 @@ class Islands {
     for (let x = 0; x < gridSize; x++) {
       for (let z = 0; z < gridSize; z++) {
         const cellValue = this.grid[x][z];
-        const material = cellValue >= 0 ? materials.island : materials.void;
+        
+        // Determine material: center > island > void
+        let material;
+        if (this.isCenterCell(x, z)) {
+          material = materials.center;
+        } else if (cellValue >= 0) {
+          material = materials.island;
+        } else {
+          material = materials.void;
+        }
         
         const tile = new THREE.Mesh(cellGeom, material);
         
@@ -822,7 +914,7 @@ class Islands {
       needsPhysics: false,
     });
     
-    console.log(`Debug grid created with ${gridSize * gridSize} tiles`);
+    console.log(`Debug grid created with ${gridSize * gridSize} tiles (${this.centerCells.size} center cells)`);
   }
   
   /**
@@ -955,6 +1047,7 @@ class Islands {
     }
     
     this.islands = [];
+    this.centerCells.clear();
     this.physicsBody = null;
   }
   
@@ -967,6 +1060,8 @@ class Islands {
       islands: this.islands.map(island => ({
         index: island.index,
         cells: island.cells.length,
+        centerCell: island.centerCell,
+        centroid: island.centroid,
       })),
       meshStats: this.getMeshStats(),
     };

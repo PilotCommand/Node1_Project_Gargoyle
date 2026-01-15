@@ -1,7 +1,9 @@
 /**
- * Map - Island-based world with connecting paths
+ * Map - Island-based world with connecting paths and buildings
  * Uses islands.js to generate disconnected landmasses
  * Uses creeks.js to generate paths between islands
+ * Uses paths.js to generate roads on islands
+ * Uses buildings.js to place buildings on available tiles
  */
 
 import * as THREE from 'three';
@@ -9,6 +11,7 @@ import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import islands, { ISLANDS_CONFIG } from './islands.js';
 import creeks from './creeks.js';
 import paths from './paths.js';
+import buildings from './buildings.js';
 
 // Configuration
 const MAP_CONFIG = {
@@ -51,6 +54,15 @@ class GameMap {
     paths.generate(islands.grid, islands.islands, {
       gridSize: ISLANDS_CONFIG.gridDivisions,
       cellSize: islands.cellSize,
+      connectionCells: creeks.connectionCells,  // Pass creek connection points (gasoline green)
+      creekPathCells: creeks.pathCells,         // Pass creek path cells (navy) to add roads on bridges
+    });
+    
+    // Initialize and generate buildings on available tiles
+    buildings.init(scene);
+    buildings.generate(islands.grid, islands.islands, paths.roadCells, {
+      gridSize: ISLANDS_CONFIG.gridDivisions,
+      cellSize: islands.cellSize,
     });
     
     this.createDebugGrid();
@@ -58,7 +70,7 @@ class GameMap {
     // Hide debug by default
     meshRegistry.setCategoryVisibility(MeshCategory.DEBUG, this.isDebugVisible);
     
-    console.log('Map initialized with islands, creeks, and roads');
+    console.log('Map initialized with islands, creeks, roads, and buildings');
   }
   
   /**
@@ -182,6 +194,14 @@ class GameMap {
   }
   
   /**
+   * Get obstacles for line-of-sight checks (buildings)
+   * @returns {THREE.Object3D[]}
+   */
+  getObstacles() {
+    return buildings.getObstacles();
+  }
+  
+  /**
    * Get islands reference
    */
   getIslands() {
@@ -203,6 +223,13 @@ class GameMap {
   }
   
   /**
+   * Get buildings reference
+   */
+  getBuildings() {
+    return buildings;
+  }
+  
+  /**
    * Get debug info
    */
   getDebugInfo() {
@@ -210,6 +237,7 @@ class GameMap {
       islands: islands.getDebugInfo(),
       creeks: creeks.getDebugInfo(),
       paths: paths.getDebugInfo(),
+      buildings: buildings.getDebugInfo(),
     };
   }
   
@@ -220,6 +248,7 @@ class GameMap {
     islands.clear();
     creeks.clear();
     paths.clear();
+    buildings.clear();
     
     if (this.debugGrid) {
       this.scene.remove(this.debugGrid);

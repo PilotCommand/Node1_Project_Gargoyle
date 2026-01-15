@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import physicsMeshers from '../physics/physicsmeshers.js';
+import { ASH } from '../utilities/palette.js';
 
 // Configuration
 const CREEKS_CONFIG = {
@@ -23,8 +24,8 @@ const CREEKS_CONFIG = {
   // Path depth (should match island depth for seamless connection)
   pathDepth: 20,
   
-  // Visual - slightly different from islands for visibility
-  pathColor: 0x888880,
+  // Visual - same color as islands for seamless appearance
+  pathColor: ASH.darkest,  // Matches islands.groundColor
   
   // Connection strategy
   connectAllIslands: true,   // Ensure all islands are reachable (spanning tree)
@@ -46,6 +47,7 @@ const CREEKS_CONFIG = {
     height: 0.55,            // Slightly above island debug tiles
     opacity: 0.7,
     color: 0x000066,         // Navy blue for paths
+    connectionColor: 0x58D68D, // Gasoline green for island connection points
   },
 };
 
@@ -70,6 +72,7 @@ class Creeks {
     // Path data
     this.paths = [];            // Array of path definitions
     this.pathCells = new Set(); // Set of "x,z" strings for path cells
+    this.connectionCells = new Set(); // Set of "x,z" strings for island cells adjacent to paths
     
     // The path mesh
     this.pathMesh = null;
@@ -83,6 +86,7 @@ class Creeks {
     this.stats = {
       totalPaths: 0,
       totalCells: 0,
+      connectionCells: 0,
       optimizedFaces: 0,
     };
   }
@@ -126,7 +130,10 @@ class Creeks {
       this.buildPath(connection);
     }
     
-    // Step 3: Create the mesh
+    // Step 3: Identify island cells that connect to paths
+    this.identifyConnectionCells();
+    
+    // Step 4: Create the mesh
     if (this.pathCells.size > 0) {
       this.createPathMesh();
       this.createDebugGrid();
@@ -288,6 +295,13 @@ class Creeks {
    */
   isPathCell(x, z) {
     return this.pathCells.has(`${x},${z}`);
+  }
+  
+  /**
+   * Check if a cell is a connection cell (island cell adjacent to path)
+   */
+  isConnectionCell(x, z) {
+    return this.connectionCells.has(`${x},${z}`);
   }
   
   /**
@@ -486,6 +500,40 @@ class Creeks {
   }
   
   /**
+   * Identify island cells that are adjacent to path cells
+   * These are the "connection points" where creeks attach to islands
+   */
+  identifyConnectionCells() {
+    this.connectionCells.clear();
+    
+    const dirs = [
+      { x: 1, z: 0 },
+      { x: -1, z: 0 },
+      { x: 0, z: 1 },
+      { x: 0, z: -1 },
+    ];
+    
+    // For each path cell, check its neighbors
+    for (const cellKey of this.pathCells) {
+      const [x, z] = cellKey.split(',').map(Number);
+      
+      for (const dir of dirs) {
+        const nx = x + dir.x;
+        const nz = z + dir.z;
+        
+        // Check if neighbor is an island cell (not void, not path)
+        if (nx >= 0 && nx < this.gridSize && nz >= 0 && nz < this.gridSize) {
+          if (this.grid[nx][nz] >= 0) {  // Island cell
+            this.connectionCells.add(`${nx},${nz}`);
+          }
+        }
+      }
+    }
+    
+    console.log(`Creeks: Identified ${this.connectionCells.size} island connection cells`);
+  }
+  
+  /**
    * Create the path mesh using optimized face generation
    */
   createPathMesh() {
@@ -623,9 +671,10 @@ class Creeks {
     // Update stats
     this.stats.totalPaths = this.paths.length;
     this.stats.totalCells = this.pathCells.size;
+    this.stats.connectionCells = this.connectionCells.size;
     this.stats.optimizedFaces = faces.length;
     
-    console.log(`Creeks: Mesh created with ${faces.length} faces (${this.pathCells.size} path cells)`);
+    console.log(`Creeks: Mesh created with ${faces.length} faces (${this.pathCells.size} path cells, ${this.connectionCells.size} connection points)`);
   }
   
   /**
@@ -779,7 +828,7 @@ class Creeks {
   }
   
   /**
-   * Create debug grid tiles for path cells (navy color)
+   * Create debug grid tiles for path cells (navy) and connection cells (gasoline green)
    */
   createDebugGrid() {
     if (this.pathCells.size === 0) return;
@@ -793,10 +842,18 @@ class Creeks {
     this.debugGrid.name = 'creeks_debug_grid';
     
     // Navy material for path cells
-    const material = new THREE.MeshBasicMaterial({
+    const pathMaterial = new THREE.MeshBasicMaterial({
       color: debugConfig.color,
       transparent: true,
       opacity: debugConfig.opacity,
+      side: THREE.DoubleSide,
+    });
+    
+    // Gasoline green material for connection cells
+    const connectionMaterial = new THREE.MeshBasicMaterial({
+      color: debugConfig.connectionColor,
+      transparent: true,
+      opacity: 0.9,  // Slightly more visible
       side: THREE.DoubleSide,
     });
     
@@ -804,17 +861,31 @@ class Creeks {
     const cellGeom = new THREE.PlaneGeometry(cellSize * 0.9, cellSize * 0.9);
     cellGeom.rotateX(-Math.PI / 2);
     
-    // Create a tile for each path cell
+    // Create tiles for path cells (navy)
     for (const cellKey of this.pathCells) {
       const [x, z] = cellKey.split(',').map(Number);
       
-      const tile = new THREE.Mesh(cellGeom, material);
+      const tile = new THREE.Mesh(cellGeom, pathMaterial);
       
       // Convert grid coords to world coords
       const worldX = (x - halfGrid) * cellSize + cellSize / 2;
       const worldZ = (z - halfGrid) * cellSize + cellSize / 2;
       
       tile.position.set(worldX, debugConfig.height, worldZ);
+      this.debugGrid.add(tile);
+    }
+    
+    // Create tiles for connection cells (gasoline green)
+    // These go slightly higher so they're visible on top of island debug tiles
+    for (const cellKey of this.connectionCells) {
+      const [x, z] = cellKey.split(',').map(Number);
+      
+      const tile = new THREE.Mesh(cellGeom, connectionMaterial);
+      
+      const worldX = (x - halfGrid) * cellSize + cellSize / 2;
+      const worldZ = (z - halfGrid) * cellSize + cellSize / 2;
+      
+      tile.position.set(worldX, debugConfig.height + 0.05, worldZ);
       this.debugGrid.add(tile);
     }
     
@@ -828,7 +899,7 @@ class Creeks {
       needsPhysics: false,
     });
     
-    console.log(`Creeks: Debug grid created with ${this.pathCells.size} tiles (navy)`);
+    console.log(`Creeks: Debug grid created with ${this.pathCells.size} path tiles (navy) and ${this.connectionCells.size} connection tiles (green)`);
   }
   
   /**
@@ -894,6 +965,7 @@ class Creeks {
     
     this.paths = [];
     this.pathCells.clear();
+    this.connectionCells.clear();
     this.physicsBody = null;
   }
   
@@ -904,6 +976,7 @@ class Creeks {
     return {
       paths: this.paths.length,
       cells: this.pathCells.size,
+      connectionCells: this.connectionCells.size,
       stats: this.stats,
     };
   }

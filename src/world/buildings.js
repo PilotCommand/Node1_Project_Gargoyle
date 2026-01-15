@@ -1,50 +1,59 @@
 /**
- * Buildings - Procedural building generator
- * Creates various building types with ash grey aesthetics
+ * Buildings - Simple rectangular prism buildings on grid tiles
+ * 
+ * Places buildings on island tiles that are not roads.
+ * All dimensions are in tile units and snap to the grid.
  */
 
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
 import physicsMeshers from '../physics/physicsmeshers.js';
-import { BUILDINGS, randomAshGrey, adjustBrightness } from '../utilities/palette.js';
+import { BUILDINGS, randomAshGrey } from '../utilities/palette.js';
 
-// Building configuration
-const BUILDING_CONFIG = {
-  // Size ranges
-  minWidth: 6,
-  maxWidth: 20,
-  minDepth: 6,
-  maxDepth: 20,
-  minHeight: 8,
-  maxHeight: 40,
+// Configuration - all dimensions in TILES
+const BUILDINGS_CONFIG = {
+  // Building size ranges (in tiles)
+  width:  { min: 2, max: 8 },   // X dimension in tiles
+  depth:  { min: 2, max: 8 },   // Z dimension in tiles
+  height: { min: 2, max: 8 },   // Y dimension in tiles
   
-  // Floor settings
-  floorHeight: 3,
+  // Tile height (world units per tile of height)
+  tileHeight: 4,
   
-  // Colors from palette
-  minShade: BUILDINGS.minShade,
-  maxShade: BUILDINGS.maxShade,
+  // Placement
+  maxBuildingsPerIsland: 0,
+  minGapBetweenBuildings: 1,   // Minimum tiles between buildings
   
-  // Detail settings
-  windowRows: true,
-  roofVariation: true,
-  ledges: true
-};
-
-// Building types
-export const BuildingType = {
-  SIMPLE: 'simple',         // Basic box
-  TIERED: 'tiered',         // Steps back at higher floors
-  TOWER: 'tower',           // Tall and narrow
-  WIDE: 'wide',             // Short and wide
-  COMPLEX: 'complex'        // Multiple sections
+  // Visual
+  roughness: 0.9,
+  metalness: 0.1,
 };
 
 class Buildings {
   constructor() {
-    this.buildings = [];
     this.scene = null;
-    this.buildingCount = 0;
+    this.buildings = [];
+    
+    // Grid references
+    this.grid = null;
+    this.gridSize = 0;
+    this.cellSize = 0;
+    this.halfGrid = 0;
+    
+    // Track occupied cells: Set of "x,z" strings
+    this.occupiedCells = new Set();
+    
+    // Road cells reference
+    this.roadCells = null;
+    
+    // Random seed
+    this.randomSeed = Date.now();
+    
+    // Stats
+    this.stats = {
+      totalBuildings: 0,
+      totalCells: 0,
+    };
   }
   
   /**
@@ -57,431 +66,377 @@ class Buildings {
   }
   
   /**
-   * Generate a random ash grey color
-   * Uses the centralized palette function
-   * @returns {number} Hex color
+   * Generate buildings on islands
+   * @param {number[][]} grid - Island grid from islands.js
+   * @param {Array} islands - Island data from islands.js
+   * @param {Set} roadCells - Road cells from paths.js
+   * @param {object} config - Grid configuration
    */
-  randomGreyscale() {
-    return randomAshGrey();
+  generate(grid, islands, roadCells, config = {}) {
+    this.clear();
+    
+    this.grid = grid;
+    this.gridSize = grid.length;
+    this.cellSize = config.cellSize || 4;
+    this.halfGrid = this.gridSize / 2;
+    this.roadCells = roadCells || new Set();
+    this.randomSeed = Date.now();
+    
+    console.log(`Buildings: Generating on ${islands.length} islands...`);
+    
+    // Generate buildings for each island
+    for (const island of islands) {
+      this.generateIslandBuildings(island);
+    }
+    
+    this.stats.totalCells = this.occupiedCells.size;
+    console.log(`Buildings: Created ${this.stats.totalBuildings} buildings using ${this.stats.totalCells} cells`);
+    
+    return this.stats;
   }
   
   /**
-   * Create a simple box building
-   * @param {object} options
-   * @returns {THREE.Group}
+   * Generate buildings for a single island
+   * @param {object} island
    */
-  createSimpleBuilding(options = {}) {
-    const width = options.width || this.randomRange(BUILDING_CONFIG.minWidth, BUILDING_CONFIG.maxWidth);
-    const depth = options.depth || this.randomRange(BUILDING_CONFIG.minDepth, BUILDING_CONFIG.maxDepth);
-    const height = options.height || this.randomRange(BUILDING_CONFIG.minHeight, BUILDING_CONFIG.maxHeight);
-    const color = options.color || this.randomGreyscale();
+  generateIslandBuildings(island) {
+    const cells = island.cells;
+    if (cells.length < 20) return; // Too small
     
-    const group = new THREE.Group();
+    // Get available cells (island cells that are not roads)
+    const availableCells = this.getAvailableCells(island);
+    if (availableCells.length === 0) return;
     
-    // Main building body
-    const geometry = new THREE.BoxGeometry(width, height, depth);
-    const material = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.9,
-      metalness: 0.1
-    });
+    // Shuffle available cells for random placement
+    this.shuffleArray(availableCells);
     
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.y = height / 2;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    let buildingsPlaced = 0;
+    let cellIndex = 0;
     
-    group.add(mesh);
-    
-    // Add window details
-    if (BUILDING_CONFIG.windowRows) {
-      this.addWindows(group, width, depth, height, color);
-    }
-    
-    // Add roof variation
-    if (BUILDING_CONFIG.roofVariation && Math.random() > 0.5) {
-      this.addRoofDetails(group, width, depth, height, color);
-    }
-    
-    // Add ledges
-    if (BUILDING_CONFIG.ledges && Math.random() > 0.6) {
-      this.addLedges(group, width, depth, height, color);
-    }
-    
-    // Store dimensions for physics
-    group.userData.buildingDimensions = { width, depth, height };
-    
-    return group;
-  }
-  
-  /**
-   * Create a tiered building (steps back at higher floors)
-   * @param {object} options
-   * @returns {THREE.Group}
-   */
-  createTieredBuilding(options = {}) {
-    const baseWidth = options.width || this.randomRange(12, 20);
-    const baseDepth = options.depth || this.randomRange(12, 20);
-    const totalHeight = options.height || this.randomRange(20, 40);
-    const color = options.color || this.randomGreyscale();
-    const tiers = options.tiers || this.randomRange(2, 4);
-    
-    const group = new THREE.Group();
-    
-    let currentY = 0;
-    let currentWidth = baseWidth;
-    let currentDepth = baseDepth;
-    const tierHeight = totalHeight / tiers;
-    
-    for (let i = 0; i < tiers; i++) {
-      const geometry = new THREE.BoxGeometry(currentWidth, tierHeight, currentDepth);
+    while (buildingsPlaced < BUILDINGS_CONFIG.maxBuildingsPerIsland && cellIndex < availableCells.length) {
+      const startCell = availableCells[cellIndex];
+      cellIndex++;
       
-      // Slightly vary the shade for each tier
-      const tierShade = this.adjustShade(color, (i * 10));
-      const material = new THREE.MeshStandardMaterial({
-        color: tierShade,
-        roughness: 0.9,
-        metalness: 0.1
-      });
+      // Skip if this cell is now occupied
+      if (this.isCellOccupied(startCell.x, startCell.z)) continue;
       
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.y = currentY + tierHeight / 2;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      
-      group.add(mesh);
-      
-      currentY += tierHeight;
-      currentWidth *= 0.75;
-      currentDepth *= 0.75;
-    }
-    
-    group.userData.buildingDimensions = { width: baseWidth, depth: baseDepth, height: totalHeight };
-    
-    return group;
-  }
-  
-  /**
-   * Create a tower building (tall and narrow)
-   * @param {object} options
-   * @returns {THREE.Group}
-   */
-  createTowerBuilding(options = {}) {
-    const width = options.width || this.randomRange(6, 10);
-    const depth = options.depth || this.randomRange(6, 10);
-    const height = options.height || this.randomRange(30, 50);
-    const color = options.color || this.randomGreyscale();
-    
-    const group = new THREE.Group();
-    
-    // Main tower body
-    const geometry = new THREE.BoxGeometry(width, height, depth);
-    const material = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.9,
-      metalness: 0.1
-    });
-    
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.y = height / 2;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    
-    group.add(mesh);
-    
-    // Add spire on top
-    if (Math.random() > 0.5) {
-      const spireHeight = height * 0.15;
-      const spireGeometry = new THREE.ConeGeometry(width * 0.3, spireHeight, 4);
-      const spireMaterial = new THREE.MeshStandardMaterial({
-        color: this.adjustShade(color, -20),
-        roughness: 0.8,
-        metalness: 0.2
-      });
-      
-      const spire = new THREE.Mesh(spireGeometry, spireMaterial);
-      spire.position.y = height + spireHeight / 2;
-      spire.castShadow = true;
-      
-      group.add(spire);
-    }
-    
-    group.userData.buildingDimensions = { width, depth, height };
-    
-    return group;
-  }
-  
-  /**
-   * Create a wide building (short and wide)
-   * @param {object} options
-   * @returns {THREE.Group}
-   */
-  createWideBuilding(options = {}) {
-    const width = options.width || this.randomRange(15, 30);
-    const depth = options.depth || this.randomRange(15, 30);
-    const height = options.height || this.randomRange(6, 15);
-    const color = options.color || this.randomGreyscale();
-    
-    const group = new THREE.Group();
-    
-    // Main body
-    const geometry = new THREE.BoxGeometry(width, height, depth);
-    const material = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.9,
-      metalness: 0.1
-    });
-    
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.y = height / 2;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    
-    group.add(mesh);
-    
-    // Add rooftop structures
-    const numStructures = this.randomRange(1, 3);
-    for (let i = 0; i < numStructures; i++) {
-      const structWidth = this.randomRange(3, 6);
-      const structHeight = this.randomRange(2, 5);
-      const structGeometry = new THREE.BoxGeometry(structWidth, structHeight, structWidth);
-      const structMaterial = new THREE.MeshStandardMaterial({
-        color: this.adjustShade(color, -15),
-        roughness: 0.9,
-        metalness: 0.1
-      });
-      
-      const structure = new THREE.Mesh(structGeometry, structMaterial);
-      structure.position.set(
-        this.randomRange(-width/3, width/3),
-        height + structHeight / 2,
-        this.randomRange(-depth/3, depth/3)
-      );
-      structure.castShadow = true;
-      
-      group.add(structure);
-    }
-    
-    group.userData.buildingDimensions = { width, depth, height };
-    
-    return group;
-  }
-  
-  /**
-   * Add window details to a building
-   */
-  addWindows(group, width, depth, height, baseColor) {
-    const windowColor = this.adjustShade(baseColor, -30);
-    const windowMaterial = new THREE.MeshStandardMaterial({
-      color: windowColor,
-      roughness: 0.5,
-      metalness: 0.3
-    });
-    
-    const windowWidth = 1;
-    const windowHeight = 1.5;
-    const windowDepth = 0.1;
-    const windowGeometry = new THREE.BoxGeometry(windowWidth, windowHeight, windowDepth);
-    
-    const floors = Math.floor(height / BUILDING_CONFIG.floorHeight);
-    const windowsPerFloor = Math.floor(width / 3);
-    
-    // Front and back windows
-    for (let floor = 1; floor < floors; floor++) {
-      for (let w = 0; w < windowsPerFloor; w++) {
-        const xPos = (w - (windowsPerFloor - 1) / 2) * 3;
-        const yPos = floor * BUILDING_CONFIG.floorHeight;
-        
-        // Front
-        const frontWindow = new THREE.Mesh(windowGeometry, windowMaterial);
-        frontWindow.position.set(xPos, yPos, depth / 2 + 0.05);
-        group.add(frontWindow);
-        
-        // Back
-        const backWindow = new THREE.Mesh(windowGeometry, windowMaterial);
-        backWindow.position.set(xPos, yPos, -depth / 2 - 0.05);
-        group.add(backWindow);
+      // Try to place a building starting at this cell
+      const building = this.tryPlaceBuilding(startCell.x, startCell.z, island);
+      if (building) {
+        buildingsPlaced++;
       }
     }
+    
+    console.log(`Island ${island.index}: ${buildingsPlaced} buildings`);
   }
   
   /**
-   * Add roof details
+   * Get cells available for building (island cells minus roads)
+   * @param {object} island
+   * @returns {Array}
    */
-  addRoofDetails(group, width, depth, height, baseColor) {
-    const roofColor = this.adjustShade(baseColor, -20);
+  getAvailableCells(island) {
+    const available = [];
     
-    // Simple roof box
-    const roofWidth = width * 0.6;
-    const roofDepth = depth * 0.6;
-    const roofHeight = 2;
-    
-    const roofGeometry = new THREE.BoxGeometry(roofWidth, roofHeight, roofDepth);
-    const roofMaterial = new THREE.MeshStandardMaterial({
-      color: roofColor,
-      roughness: 0.9,
-      metalness: 0.1
-    });
-    
-    const roof = new THREE.Mesh(roofGeometry, roofMaterial);
-    roof.position.y = height + roofHeight / 2;
-    roof.castShadow = true;
-    
-    group.add(roof);
-  }
-  
-  /**
-   * Add ledges to building
-   */
-  addLedges(group, width, depth, height, baseColor) {
-    const ledgeColor = this.adjustShade(baseColor, 15);
-    const ledgeMaterial = new THREE.MeshStandardMaterial({
-      color: ledgeColor,
-      roughness: 0.9,
-      metalness: 0.1
-    });
-    
-    // Base ledge
-    const baseLedgeGeometry = new THREE.BoxGeometry(width + 0.5, 0.5, depth + 0.5);
-    const baseLedge = new THREE.Mesh(baseLedgeGeometry, ledgeMaterial);
-    baseLedge.position.y = 0.25;
-    baseLedge.receiveShadow = true;
-    
-    group.add(baseLedge);
-    
-    // Top ledge
-    const topLedgeGeometry = new THREE.BoxGeometry(width + 0.3, 0.3, depth + 0.3);
-    const topLedge = new THREE.Mesh(topLedgeGeometry, ledgeMaterial);
-    topLedge.position.y = height + 0.15;
-    topLedge.castShadow = true;
-    
-    group.add(topLedge);
-  }
-  
-  /**
-   * Create a random building
-   * @param {object} options
-   * @returns {THREE.Group}
-   */
-  createRandomBuilding(options = {}) {
-    const types = [
-      BuildingType.SIMPLE,
-      BuildingType.SIMPLE,  // Weight simple more
-      BuildingType.TIERED,
-      BuildingType.TOWER,
-      BuildingType.WIDE
-    ];
-    
-    const type = options.type || types[Math.floor(Math.random() * types.length)];
-    
-    switch (type) {
-      case BuildingType.TIERED:
-        return this.createTieredBuilding(options);
-      case BuildingType.TOWER:
-        return this.createTowerBuilding(options);
-      case BuildingType.WIDE:
-        return this.createWideBuilding(options);
-      case BuildingType.SIMPLE:
-      default:
-        return this.createSimpleBuilding(options);
+    for (const cell of island.cells) {
+      const key = `${cell.x},${cell.z}`;
+      
+      // Skip road cells
+      if (this.roadCells.has(key)) continue;
+      
+      // Skip already occupied
+      if (this.occupiedCells.has(key)) continue;
+      
+      available.push({ x: cell.x, z: cell.z });
     }
+    
+    return available;
   }
   
   /**
-   * Place a building in the world
-   * @param {THREE.Group} building
+   * Try to place a building at the given grid position
+   * @param {number} startX - Grid X
+   * @param {number} startZ - Grid Z
+   * @param {object} island
+   * @returns {object|null} Building data or null
+   */
+  tryPlaceBuilding(startX, startZ, island) {
+    // Random dimensions in tiles
+    const widthTiles = this.randomInt(BUILDINGS_CONFIG.width.min, BUILDINGS_CONFIG.width.max);
+    const depthTiles = this.randomInt(BUILDINGS_CONFIG.depth.min, BUILDINGS_CONFIG.depth.max);
+    const heightTiles = this.randomInt(BUILDINGS_CONFIG.height.min, BUILDINGS_CONFIG.height.max);
+    
+    // Check if all cells for this building are available
+    const footprint = this.getFootprintCells(startX, startZ, widthTiles, depthTiles);
+    
+    if (!this.canPlaceFootprint(footprint, island.index)) {
+      // Try smaller sizes
+      return this.tryPlaceSmallerBuilding(startX, startZ, island);
+    }
+    
+    // Place the building
+    return this.placeBuilding(startX, startZ, widthTiles, depthTiles, heightTiles, footprint);
+  }
+  
+  /**
+   * Try to place a smaller building if the random size doesn't fit
+   * @param {number} startX
+   * @param {number} startZ
+   * @param {object} island
+   * @returns {object|null}
+   */
+  tryPlaceSmallerBuilding(startX, startZ, island) {
+    // Try minimum size
+    const minWidth = BUILDINGS_CONFIG.width.min;
+    const minDepth = BUILDINGS_CONFIG.depth.min;
+    
+    const footprint = this.getFootprintCells(startX, startZ, minWidth, minDepth);
+    
+    if (!this.canPlaceFootprint(footprint, island.index)) {
+      return null; // Can't even fit minimum size
+    }
+    
+    const heightTiles = this.randomInt(BUILDINGS_CONFIG.height.min, BUILDINGS_CONFIG.height.max);
+    return this.placeBuilding(startX, startZ, minWidth, minDepth, heightTiles, footprint);
+  }
+  
+  /**
+   * Get all cells that would be occupied by a building footprint
+   * @param {number} startX - Starting grid X
+   * @param {number} startZ - Starting grid Z
+   * @param {number} widthTiles - Width in tiles
+   * @param {number} depthTiles - Depth in tiles
+   * @returns {Array} Array of {x, z} cells
+   */
+  getFootprintCells(startX, startZ, widthTiles, depthTiles) {
+    const cells = [];
+    
+    for (let dx = 0; dx < widthTiles; dx++) {
+      for (let dz = 0; dz < depthTiles; dz++) {
+        cells.push({ x: startX + dx, z: startZ + dz });
+      }
+    }
+    
+    return cells;
+  }
+  
+  /**
+   * Check if a footprint can be placed
+   * @param {Array} footprint - Array of cells
+   * @param {number} islandIndex - Must all be on this island
+   * @returns {boolean}
+   */
+  canPlaceFootprint(footprint, islandIndex) {
+    const gap = BUILDINGS_CONFIG.minGapBetweenBuildings;
+    
+    for (const cell of footprint) {
+      // Check bounds
+      if (cell.x < 0 || cell.x >= this.gridSize) return false;
+      if (cell.z < 0 || cell.z >= this.gridSize) return false;
+      
+      // Check if on correct island
+      if (this.grid[cell.x][cell.z] !== islandIndex) return false;
+      
+      // Check if road
+      if (this.roadCells.has(`${cell.x},${cell.z}`)) return false;
+      
+      // Check if occupied (including gap)
+      for (let gx = -gap; gx <= gap; gx++) {
+        for (let gz = -gap; gz <= gap; gz++) {
+          if (this.isCellOccupied(cell.x + gx, cell.z + gz)) return false;
+        }
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Check if a cell is occupied
    * @param {number} x
    * @param {number} z
-   * @returns {number} Registry ID
+   * @returns {boolean}
    */
-  placeBuilding(building, x, z) {
-    if (!this.scene) {
-      console.error('Buildings not initialized with scene');
-      return null;
+  isCellOccupied(x, z) {
+    return this.occupiedCells.has(`${x},${z}`);
+  }
+  
+  /**
+   * Mark cells as occupied
+   * @param {Array} cells
+   */
+  markCellsOccupied(cells) {
+    for (const cell of cells) {
+      this.occupiedCells.add(`${cell.x},${cell.z}`);
     }
+  }
+  
+  /**
+   * Place a building
+   * @param {number} startX - Grid X
+   * @param {number} startZ - Grid Z
+   * @param {number} widthTiles - Width in tiles
+   * @param {number} depthTiles - Depth in tiles
+   * @param {number} heightTiles - Height in tiles
+   * @param {Array} footprint - Cells to occupy
+   * @returns {object} Building data
+   */
+  placeBuilding(startX, startZ, widthTiles, depthTiles, heightTiles, footprint) {
+    // Mark cells as occupied
+    this.markCellsOccupied(footprint);
     
-    building.position.set(x, 0, z);
-    this.scene.add(building);
+    // Calculate world dimensions
+    const worldWidth = widthTiles * this.cellSize;
+    const worldDepth = depthTiles * this.cellSize;
+    const worldHeight = heightTiles * BUILDINGS_CONFIG.tileHeight;
+    
+    // Calculate world position (center of footprint)
+    const centerX = startX + widthTiles / 2;
+    const centerZ = startZ + depthTiles / 2;
+    
+    const worldX = (centerX - this.halfGrid) * this.cellSize;
+    const worldZ = (centerZ - this.halfGrid) * this.cellSize;
+    const worldY = worldHeight / 2; // Bottom at Y=0
+    
+    // Create mesh
+    const geometry = new THREE.BoxGeometry(worldWidth, worldHeight, worldDepth);
+    const material = new THREE.MeshStandardMaterial({
+      color: randomAshGrey(),
+      roughness: BUILDINGS_CONFIG.roughness,
+      metalness: BUILDINGS_CONFIG.metalness,
+    });
+    
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(worldX, worldY, worldZ);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.name = `building_${this.stats.totalBuildings}`;
+    
+    this.scene.add(mesh);
     
     // Register with mesh registry
-    const id = meshRegistry.register(building, MeshCategory.BUILDING, {
-      name: `building_${this.buildingCount++}`,
+    const id = meshRegistry.register(mesh, MeshCategory.BUILDING, {
+      name: mesh.name,
       needsPhysics: true,
       isStatic: true,
-      metadata: building.userData.buildingDimensions
+      metadata: {
+        gridX: startX,
+        gridZ: startZ,
+        widthTiles,
+        depthTiles,
+        heightTiles,
+      },
     });
     
-    // Create trimesh physics collider for accurate collision
-    physicsMeshers.createTrimeshCollider(building, {
+    // Create physics collider
+    const physics = physicsMeshers.createBoxCollider(mesh, {
+      isStatic: true,
       friction: 0.5,
-      restitution: 0.0
+      restitution: 0.0,
     });
     
-    this.buildings.push({ id, building, x, z });
-    
-    return id;
-  }
-  
-  /**
-   * Generate multiple buildings at positions
-   * @param {Array} positions - Array of {x, z} positions
-   */
-  generateBuildings(positions) {
-    for (const pos of positions) {
-      const building = this.createRandomBuilding(pos.options || {});
-      this.placeBuilding(building, pos.x, pos.z);
+    if (physics) {
+      meshRegistry.linkPhysicsBody(id, physics.body, physics.colliders);
     }
     
-    console.log(`Generated ${positions.length} buildings`);
+    // Store building data
+    const building = {
+      id,
+      mesh,
+      gridX: startX,
+      gridZ: startZ,
+      widthTiles,
+      depthTiles,
+      heightTiles,
+      footprint,
+    };
+    
+    this.buildings.push(building);
+    this.stats.totalBuildings++;
+    
+    return building;
   }
   
   /**
-   * Adjust a greyscale shade by an amount
-   * @param {number} color
-   * @param {number} amount - Positive = lighter, negative = darker
-   * @returns {number}
+   * Get all building meshes (for raycasting, etc.)
+   * @returns {THREE.Mesh[]}
    */
-  adjustShade(color, amount) {
-    return adjustBrightness(color, amount);
+  getMeshes() {
+    return this.buildings.map(b => b.mesh);
   }
   
   /**
-   * Random number in range
+   * Get buildings as obstacles for AI line-of-sight
+   * @returns {THREE.Object3D[]}
    */
-  randomRange(min, max) {
-    return Math.random() * (max - min) + min;
+  getObstacles() {
+    return this.getMeshes();
   }
   
-  /**
-   * Random integer in range
-   */
-  randomIntRange(min, max) {
-    return Math.floor(this.randomRange(min, max + 1));
+  // ============================================
+  // Utility Methods
+  // ============================================
+  
+  random() {
+    this.randomSeed = (this.randomSeed * 9301 + 49297) % 233280;
+    return this.randomSeed / 233280;
   }
+  
+  randomInt(min, max) {
+    return Math.floor(this.random() * (max - min + 1)) + min;
+  }
+  
+  shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = this.randomInt(0, i);
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+  
+  // ============================================
+  // Cleanup
+  // ============================================
   
   /**
    * Clear all buildings
    */
   clear() {
-    for (const { id, building } of this.buildings) {
-      this.scene.remove(building);
-      meshRegistry.unregister(id);
+    for (const building of this.buildings) {
+      this.scene.remove(building.mesh);
+      building.mesh.geometry?.dispose();
+      building.mesh.material?.dispose();
       
-      // Dispose geometries and materials
-      building.traverse((child) => {
-        if (child.isMesh) {
-          child.geometry?.dispose();
-          child.material?.dispose();
-        }
-      });
+      if (building.id) {
+        meshRegistry.unregister(building.id);
+      }
     }
     
     this.buildings = [];
-    this.buildingCount = 0;
+    this.occupiedCells.clear();
+    this.stats = { totalBuildings: 0, totalCells: 0 };
+  }
+  
+  /**
+   * Get stats
+   * @returns {object}
+   */
+  getStats() {
+    return { ...this.stats };
+  }
+  
+  /**
+   * Debug info
+   */
+  getDebugInfo() {
+    return {
+      buildings: this.buildings.length,
+      occupiedCells: this.occupiedCells.size,
+      stats: this.stats,
+    };
   }
 }
 
 // Export singleton
 const buildings = new Buildings();
 export default buildings;
-export { Buildings };
+export { Buildings, BUILDINGS_CONFIG };

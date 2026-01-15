@@ -59,6 +59,8 @@ class Paths {
     // Road data
     this.roadCells = new Set();
     this.rectangles = [];      // Store generated rectangles
+    this.connectionCells = null; // Creek connection cells to connect to
+    this.creekPathCells = null;  // Creek bridge cells (navy) to add roads on
     
     // The road mesh
     this.roadMesh = null;
@@ -74,6 +76,7 @@ class Paths {
     this.stats = {
       totalRectangles: 0,
       totalStrayRoads: 0,
+      totalCreekConnectors: 0,
       totalCells: 0,
     };
   }
@@ -97,6 +100,8 @@ class Paths {
     this.gridSize = grid.length;
     this.cellSize = config.cellSize || 4;
     this.halfGrid = this.gridSize / 2;
+    this.connectionCells = config.connectionCells || null;
+    this.creekPathCells = config.creekPathCells || null;
     this.randomSeed = Date.now();
     
     console.log(`Paths: Generating rectangle roads on ${islands.length} islands...`);
@@ -106,6 +111,16 @@ class Paths {
       this.generateIslandRoads(island);
     }
     
+    // Connect roads to creek connection points
+    if (this.connectionCells && this.connectionCells.size > 0) {
+      this.connectToCreeks();
+    }
+    
+    // Add roads on creek bridge tiles (navy cells)
+    if (this.creekPathCells && this.creekPathCells.size > 0) {
+      this.addCreekBridgeRoads();
+    }
+    
     // Create the mesh
     if (this.roadCells.size > 0) {
       this.createRoadMesh();
@@ -113,7 +128,7 @@ class Paths {
     }
     
     this.stats.totalCells = this.roadCells.size;
-    console.log(`Paths: Created ${this.stats.totalRectangles} rectangles, ${this.stats.totalStrayRoads} stray roads, ${this.roadCells.size} total cells`);
+    console.log(`Paths: Created ${this.stats.totalRectangles} rectangles, ${this.stats.totalStrayRoads} stray roads, ${this.stats.totalCreekConnectors} creek connectors, ${this.roadCells.size} total cells`);
     
     return this.stats;
   }
@@ -507,6 +522,177 @@ class Paths {
   }
   
   /**
+   * Connect road network to creek connection points
+   * Builds paths from existing roads to the gasoline green connection cells
+   */
+  connectToCreeks() {
+    if (!this.connectionCells || this.connectionCells.size === 0) {
+      console.log('Paths: No creek connection cells to connect to');
+      return;
+    }
+    
+    console.log(`Paths: Connecting roads to ${this.connectionCells.size} creek connection points...`);
+    
+    // Group connection cells by island
+    const connectionsByIsland = new Map();
+    
+    for (const cellKey of this.connectionCells) {
+      const [x, z] = cellKey.split(',').map(Number);
+      const islandIndex = this.grid[x]?.[z];
+      
+      if (islandIndex === undefined || islandIndex < 0) continue;
+      
+      if (!connectionsByIsland.has(islandIndex)) {
+        connectionsByIsland.set(islandIndex, []);
+      }
+      connectionsByIsland.get(islandIndex).push({ x, z });
+    }
+    
+    // For each island, connect roads to its connection points
+    for (const [islandIndex, connectionPoints] of connectionsByIsland) {
+      const island = this.islands.find(isl => isl.index === islandIndex);
+      if (!island) continue;
+      
+      // Build island cell set for pathfinding
+      const islandCellSet = new Set(island.cells.map(c => `${c.x},${c.z}`));
+      
+      // Get road cells on this island
+      const islandRoadCells = [];
+      for (const cellKey of this.roadCells) {
+        if (islandCellSet.has(cellKey)) {
+          const [x, z] = cellKey.split(',').map(Number);
+          islandRoadCells.push({ x, z });
+        }
+      }
+      
+      // Connect each connection point to the nearest road
+      for (const connPoint of connectionPoints) {
+        // Skip if connection point is already a road
+        if (this.isRoadCell(connPoint.x, connPoint.z)) {
+          continue;
+        }
+        
+        // Find nearest road cell
+        const nearestRoad = this.findNearestRoadCell(connPoint, islandRoadCells);
+        
+        if (nearestRoad) {
+          // Build path from nearest road to connection point
+          const path = this.findPathBFS(nearestRoad, connPoint, islandCellSet);
+          
+          if (path && path.length > 0) {
+            // Add all path cells as roads
+            for (const cell of path) {
+              this.roadCells.add(`${cell.x},${cell.z}`);
+            }
+            this.stats.totalCreekConnectors++;
+          }
+        } else {
+          // No road on this island yet - create direct path from center
+          if (island.centerCell) {
+            const path = this.findPathBFS(island.centerCell, connPoint, islandCellSet);
+            if (path && path.length > 0) {
+              for (const cell of path) {
+                this.roadCells.add(`${cell.x},${cell.z}`);
+              }
+              this.stats.totalCreekConnectors++;
+            }
+          }
+        }
+      }
+    }
+    
+    console.log(`Paths: Created ${this.stats.totalCreekConnectors} creek connector roads`);
+  }
+  
+  /**
+   * Add roads on creek bridge tiles (navy cells)
+   * This ensures you can walk across the bridges between islands
+   */
+  addCreekBridgeRoads() {
+    let bridgeCellsAdded = 0;
+    
+    for (const cellKey of this.creekPathCells) {
+      // Add each creek path cell as a road cell
+      if (!this.roadCells.has(cellKey)) {
+        this.roadCells.add(cellKey);
+        bridgeCellsAdded++;
+      }
+    }
+    
+    console.log(`Paths: Added ${bridgeCellsAdded} road cells on creek bridges`);
+  }
+  
+  /**
+   * Find the nearest road cell to a target position
+   */
+  findNearestRoadCell(target, roadCells) {
+    let nearest = null;
+    let nearestDist = Infinity;
+    
+    for (const road of roadCells) {
+      const dist = Math.abs(road.x - target.x) + Math.abs(road.z - target.z);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = road;
+      }
+    }
+    
+    return nearest;
+  }
+  
+  /**
+   * BFS pathfinding from start to end, staying within island cells
+   */
+  findPathBFS(start, end, islandCellSet) {
+    const queue = [{ x: start.x, z: start.z, path: [] }];
+    const visited = new Set();
+    visited.add(`${start.x},${start.z}`);
+    
+    const dirs = [
+      { dx: 1, dz: 0 },
+      { dx: -1, dz: 0 },
+      { dx: 0, dz: 1 },
+      { dx: 0, dz: -1 },
+    ];
+    
+    const maxIterations = 500;
+    let iterations = 0;
+    
+    while (queue.length > 0 && iterations < maxIterations) {
+      iterations++;
+      const current = queue.shift();
+      
+      // Reached the end?
+      if (current.x === end.x && current.z === end.z) {
+        return current.path;
+      }
+      
+      for (const dir of dirs) {
+        const nx = current.x + dir.dx;
+        const nz = current.z + dir.dz;
+        const key = `${nx},${nz}`;
+        
+        // Skip if visited
+        if (visited.has(key)) continue;
+        
+        // Skip if not on island
+        if (!islandCellSet.has(key)) continue;
+        
+        visited.add(key);
+        
+        queue.push({
+          x: nx,
+          z: nz,
+          path: [...current.path, { x: nx, z: nz }]
+        });
+      }
+    }
+    
+    // No path found
+    return null;
+  }
+  
+  /**
    * Add a road cell if it's on the island
    */
   addRoadCell(x, z, islandCellSet) {
@@ -725,7 +911,9 @@ class Paths {
     
     this.roadCells.clear();
     this.rectangles = [];
-    this.stats = { totalRectangles: 0, totalStrayRoads: 0, totalCells: 0 };
+    this.connectionCells = null;
+    this.creekPathCells = null;
+    this.stats = { totalRectangles: 0, totalStrayRoads: 0, totalCreekConnectors: 0, totalCells: 0 };
   }
   
   /**
@@ -735,6 +923,7 @@ class Paths {
     return {
       rectangles: this.rectangles.length,
       cells: this.roadCells.size,
+      creekConnectors: this.stats.totalCreekConnectors,
       stats: this.stats,
     };
   }

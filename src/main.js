@@ -346,10 +346,10 @@ function initCamera() {
 function initWorld() {
   gameMap.init(GAME.scene);
   
-  // No buildings = no obstacles for now
-  GAME.obstacles = [];
+  // Get building meshes as obstacles for line-of-sight checks
+  GAME.obstacles = gameMap.getObstacles();
   
-  console.log('World initialized (ground plane only)');
+  console.log(`World initialized with ${GAME.obstacles.length} building obstacles`);
   meshRegistry.debug();
 }
 

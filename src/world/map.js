@@ -1,144 +1,71 @@
 /**
- * Map - World foundation, ground plane, debug grid, and city generation
- * Manages the base environment and procedural city layout
+ * Map - Island-based world with connecting paths
+ * Uses islands.js to generate disconnected landmasses
+ * Uses creeks.js to generate paths between islands
  */
 
 import * as THREE from 'three';
 import meshRegistry, { MeshCategory } from '../registries/meshregistry.js';
-import physicsMeshers from '../physics/physicsmeshers.js';
-import buildings from './buildings.js';
-import { MAP, DARK } from '../utilities/palette.js';
+import islands, { ISLANDS_CONFIG } from './islands.js';
+import creeks from './creeks.js';
+import paths from './paths.js';
 
-// Map configuration
+// Configuration
 const MAP_CONFIG = {
-  // World size
   size: 200,
-  halfSize: 100,
   
-  // Ground - from palette
-  groundColor: MAP.ground,
-  
-  // Debug grid - from palette
+  // Debug grid
   gridDivisions: 50,
-  gridColorCenter: MAP.grid.center,
-  gridColorLines: MAP.grid.lines,
-  
-  // Bounds - from palette
-  boundaryHeight: 10,
-  boundaryColor: MAP.boundaries,
-  
-  // City generation
-  city: {
-    enabled: true,
-    blockSize: 30,          // Size of each city block
-    streetWidth: 10,        // Width of streets
-    minBuildings: 1,        // Min buildings per block
-    maxBuildings: 3,        // Max buildings per block
-    centerClearRadius: 15,  // Keep center clear for spawn
-    edgeMargin: 20          // Margin from map edges
-  }
+  gridColorCenter: 0x707068,
+  gridColorLines: 0x606058,
 };
 
 class GameMap {
   constructor() {
     this.scene = null;
-    this.ground = null;
     this.debugGrid = null;
-    this.boundaries = [];
-    this.isDebugVisible = false;  // Start with debug OFF
-    this.seed = null;
-    
-    // Map data
-    this.mapData = {
-      size: MAP_CONFIG.size,
-      spawnPoints: [],
-      trophyLocations: [],
-      occupiedCells: new Set(),
-      buildingPositions: []
-    };
+    this.isDebugVisible = false;
   }
   
   /**
-   * Initialize the map with a scene reference
+   * Initialize the map
    * @param {THREE.Scene} scene
-   * @param {object} options
+   * @param {number} seed - Optional seed for island generation
    */
-  init(scene, options = {}) {
+  init(scene, seed = null) {
     this.scene = scene;
-    this.seed = options.seed || Date.now();
     
-    console.log('Map initializing...');
-    console.log(`Map seed: ${this.seed}`);
+    // Initialize and generate islands
+    islands.init(scene);
+    islands.generate(seed);
     
-    // Initialize buildings system
-    buildings.init(scene);
+    // Initialize and generate connecting paths (bridges between islands)
+    creeks.init(scene);
+    creeks.generate(islands.grid, islands.islands, {
+      gridSize: ISLANDS_CONFIG.gridDivisions,
+      cellSize: islands.cellSize,
+    });
     
-    this.createGround();
+    // Initialize and generate roads on islands
+    paths.init(scene);
+    paths.generate(islands.grid, islands.islands, {
+      gridSize: ISLANDS_CONFIG.gridDivisions,
+      cellSize: islands.cellSize,
+    });
+    
     this.createDebugGrid();
-    this.createBoundaries();
-    this.createStreets();
     
-    // Generate city if enabled
-    if (MAP_CONFIG.city.enabled) {
-      this.generateCity();
-    }
-    
-    // Set up spawn points
-    this.generateSpawnPoints();
-    
+    // Hide debug by default
     meshRegistry.setCategoryVisibility(MeshCategory.DEBUG, this.isDebugVisible);
-    console.log('Map initialized');
-  }
-  
-  /**
-   * Create the ground plane
-   */
-  createGround() {
-    const groundGeometry = new THREE.PlaneGeometry(
-      MAP_CONFIG.size, 
-      MAP_CONFIG.size,
-      1, 
-      1
-    );
     
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: MAP_CONFIG.groundColor,
-      roughness: 0.9,
-      metalness: 0.1,
-      side: THREE.DoubleSide
-    });
-    
-    this.ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    this.ground.rotation.x = -Math.PI / 2;
-    this.ground.position.y = 0;
-    this.ground.receiveShadow = true;
-    this.ground.name = 'ground';
-    
-    this.scene.add(this.ground);
-    
-    const groundId = meshRegistry.register(this.ground, MeshCategory.GROUND, {
-      name: 'main_ground',
-      needsPhysics: true,
-      isStatic: true
-    });
-    
-    const physics = physicsMeshers.createGroundPlane(
-      MAP_CONFIG.halfSize,
-      MAP_CONFIG.halfSize,
-      { y: 0, friction: 0.8 }
-    );
-    
-    if (physics) {
-      meshRegistry.linkPhysicsBody(groundId, physics.body, physics.colliders);
-    }
-    
-    console.log('Ground created');
+    console.log('Map initialized with islands, creeks, and roads');
   }
   
   /**
    * Create debug grid overlay
    */
   createDebugGrid() {
+    // Grid helper
     this.debugGrid = new THREE.GridHelper(
       MAP_CONFIG.size,
       MAP_CONFIG.gridDivisions,
@@ -147,7 +74,6 @@ class GameMap {
     );
     this.debugGrid.position.y = 0.01;
     this.debugGrid.name = 'debugGrid';
-    
     this.scene.add(this.debugGrid);
     
     meshRegistry.register(this.debugGrid, MeshCategory.DEBUG, {
@@ -155,7 +81,7 @@ class GameMap {
       needsPhysics: false
     });
     
-    // Axis helper at origin
+    // Axis helper
     const axisHelper = new THREE.AxesHelper(10);
     axisHelper.position.y = 0.02;
     axisHelper.name = 'axisHelper';
@@ -178,318 +104,126 @@ class GameMap {
       name: 'origin_marker',
       needsPhysics: false
     });
-    
-    console.log('Debug grid created');
   }
   
   /**
-   * Create invisible boundary walls
-   */
-  createBoundaries() {
-    const halfSize = MAP_CONFIG.halfSize;
-    const height = MAP_CONFIG.boundaryHeight;
-    const thickness = 1;
-    
-    const walls = [
-      { x: 0, z: -halfSize, width: MAP_CONFIG.size },
-      { x: 0, z: halfSize, width: MAP_CONFIG.size },
-      { x: -halfSize, z: 0, width: MAP_CONFIG.size },
-      { x: halfSize, z: 0, width: MAP_CONFIG.size }
-    ];
-    
-    walls.forEach((wall, index) => {
-      const isNorthSouth = index < 2;
-      
-      const geometry = new THREE.BoxGeometry(
-        isNorthSouth ? wall.width : thickness,
-        height,
-        isNorthSouth ? thickness : wall.width
-      );
-      
-      const material = new THREE.MeshBasicMaterial({
-        color: MAP_CONFIG.boundaryColor,
-        transparent: true,
-        opacity: 0.0,
-        side: THREE.DoubleSide
-      });
-      
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(wall.x, height / 2, wall.z);
-      mesh.name = `boundary_${index}`;
-      
-      this.scene.add(mesh);
-      this.boundaries.push(mesh);
-      
-      const id = meshRegistry.register(mesh, MeshCategory.GROUND, {
-        name: `boundary_wall_${index}`,
-        needsPhysics: true,
-        isStatic: true
-      });
-      
-      physicsMeshers.createForRegisteredMesh(id);
-    });
-    
-    console.log('Boundaries created');
-  }
-  
-  /**
-   * Create street markings/visual guides
-   */
-  createStreets() {
-    // Dark roads from palette - contrast with ash buildings
-    const streetColor = MAP.streets;
-    const streetMaterial = new THREE.MeshStandardMaterial({
-      color: streetColor,
-      roughness: 0.9,
-      metalness: 0.1
-    });
-    
-    const cityConfig = MAP_CONFIG.city;
-    const halfSize = MAP_CONFIG.halfSize - cityConfig.edgeMargin;
-    const blockSize = cityConfig.blockSize;
-    const streetWidth = cityConfig.streetWidth;
-    
-    // Create street grid
-    const streets = [];
-    
-    // Horizontal streets
-    for (let z = -halfSize; z <= halfSize; z += blockSize + streetWidth) {
-      const geometry = new THREE.PlaneGeometry(MAP_CONFIG.size - cityConfig.edgeMargin * 2, streetWidth);
-      const street = new THREE.Mesh(geometry, streetMaterial);
-      street.rotation.x = -Math.PI / 2;
-      street.position.set(0, 0.02, z);
-      street.receiveShadow = true;
-      this.scene.add(street);
-      streets.push(street);
-    }
-    
-    // Vertical streets
-    for (let x = -halfSize; x <= halfSize; x += blockSize + streetWidth) {
-      const geometry = new THREE.PlaneGeometry(streetWidth, MAP_CONFIG.size - cityConfig.edgeMargin * 2);
-      const street = new THREE.Mesh(geometry, streetMaterial);
-      street.rotation.x = -Math.PI / 2;
-      street.position.set(x, 0.02, 0);
-      street.receiveShadow = true;
-      this.scene.add(street);
-      streets.push(street);
-    }
-    
-    console.log(`Created ${streets.length} street segments`);
-  }
-  
-  /**
-   * Generate the procedural city layout
-   */
-  generateCity() {
-    const cityConfig = MAP_CONFIG.city;
-    const halfSize = MAP_CONFIG.halfSize - cityConfig.edgeMargin;
-    const blockSize = cityConfig.blockSize;
-    const streetWidth = cityConfig.streetWidth;
-    
-    const buildingPositions = [];
-    
-    // Generate city blocks
-    for (let x = -halfSize; x < halfSize; x += blockSize + streetWidth) {
-      for (let z = -halfSize; z < halfSize; z += blockSize + streetWidth) {
-        // Block center
-        const blockCenterX = x + blockSize / 2;
-        const blockCenterZ = z + blockSize / 2;
-        
-        // Skip if too close to center (spawn area)
-        const distFromCenter = Math.sqrt(blockCenterX * blockCenterX + blockCenterZ * blockCenterZ);
-        if (distFromCenter < cityConfig.centerClearRadius) {
-          continue;
-        }
-        
-        // Generate buildings in this block
-        const numBuildings = this.seededRandomInt(
-          cityConfig.minBuildings,
-          cityConfig.maxBuildings
-        );
-        
-        for (let i = 0; i < numBuildings; i++) {
-          // Random position within block (with margin)
-          const margin = 3;
-          const buildingX = blockCenterX + this.seededRandom() * (blockSize - margin * 2) - (blockSize - margin * 2) / 2;
-          const buildingZ = blockCenterZ + this.seededRandom() * (blockSize - margin * 2) - (blockSize - margin * 2) / 2;
-          
-          // Check if position is valid (not overlapping)
-          const valid = this.isPositionValid(buildingX, buildingZ, 8);
-          
-          if (valid) {
-            buildingPositions.push({
-              x: buildingX,
-              z: buildingZ,
-              options: {
-                // Vary building sizes based on distance from center
-                height: 8 + distFromCenter * 0.2 + this.seededRandom() * 15
-              }
-            });
-            
-            // Mark area as occupied
-            this.markOccupied(buildingX, buildingZ, 10);
-          }
-        }
-      }
-    }
-    
-    // Generate the buildings
-    buildings.generateBuildings(buildingPositions);
-    this.mapData.buildingPositions = buildingPositions;
-    
-    console.log(`City generated with ${buildingPositions.length} buildings`);
-  }
-  
-  /**
-   * Generate spawn points
-   */
-  generateSpawnPoints() {
-    // Main spawn point at origin
-    this.mapData.spawnPoints.push({
-      x: 0,
-      y: 1,
-      z: 0,
-      type: 'target'
-    });
-    
-    // Gargoyle spawn points around the edges
-    const spawnRadius = MAP_CONFIG.halfSize - 30;
-    const numGargoyleSpawns = 4;
-    
-    for (let i = 0; i < numGargoyleSpawns; i++) {
-      const angle = (i / numGargoyleSpawns) * Math.PI * 2;
-      this.mapData.spawnPoints.push({
-        x: Math.cos(angle) * spawnRadius,
-        y: 1,
-        z: Math.sin(angle) * spawnRadius,
-        type: 'gargoyle'
-      });
-    }
-    
-    console.log(`Created ${this.mapData.spawnPoints.length} spawn points`);
-  }
-  
-  /**
-   * Check if a position is valid for building placement
-   */
-  isPositionValid(x, z, minDistance) {
-    const key = `${Math.floor(x / 5)},${Math.floor(z / 5)}`;
-    
-    // Check nearby cells
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        const checkKey = `${Math.floor(x / 5) + dx},${Math.floor(z / 5) + dz}`;
-        if (this.mapData.occupiedCells.has(checkKey)) {
-          return false;
-        }
-      }
-    }
-    
-    return true;
-  }
-  
-  /**
-   * Mark an area as occupied
-   */
-  markOccupied(x, z, radius) {
-    const cellSize = 5;
-    const cells = Math.ceil(radius / cellSize);
-    
-    for (let dx = -cells; dx <= cells; dx++) {
-      for (let dz = -cells; dz <= cells; dz++) {
-        const key = `${Math.floor(x / cellSize) + dx},${Math.floor(z / cellSize) + dz}`;
-        this.mapData.occupiedCells.add(key);
-      }
-    }
-  }
-  
-  /**
-   * Seeded random number generator
-   */
-  seededRandom() {
-    // Simple seeded random
-    this.seed = (this.seed * 9301 + 49297) % 233280;
-    return this.seed / 233280;
-  }
-  
-  /**
-   * Seeded random integer
-   */
-  seededRandomInt(min, max) {
-    return Math.floor(this.seededRandom() * (max - min + 1)) + min;
-  }
-  
-  /**
-   * Toggle debug grid visibility
+   * Toggle debug visibility
    */
   toggleDebug() {
     this.isDebugVisible = !this.isDebugVisible;
     meshRegistry.setCategoryVisibility(MeshCategory.DEBUG, this.isDebugVisible);
-    console.log(`Debug visuals: ${this.isDebugVisible ? 'ON' : 'OFF'}`);
+    console.log(`Debug: ${this.isDebugVisible ? 'ON' : 'OFF'}`);
   }
   
   /**
-   * Get spawn point for player type
+   * Get spawn point
    * @param {string} type - 'target' or 'gargoyle'
-   * @returns {object} Spawn point {x, y, z}
+   * @param {number} index - For gargoyles, which spawn point (uses different islands)
    */
-  getSpawnPoint(type = 'target') {
-    const spawns = this.mapData.spawnPoints.filter(s => s.type === type);
-    if (spawns.length === 0) return { x: 0, y: 1, z: 0 };
+  getSpawnPoint(type = 'target', index = 0) {
+    if (type === 'target') {
+      // Player spawns on the largest island
+      return islands.getMainSpawnPoint();
+    }
     
-    const spawn = spawns[Math.floor(Math.random() * spawns.length)];
-    return { x: spawn.x, y: spawn.y, z: spawn.z };
+    // Gargoyles spawn on different islands
+    // Skip island 0 (largest, where player spawns) if possible
+    const islandIndex = islands.islands.length > 1 ? (index % (islands.islands.length - 1)) + 1 : 0;
+    return islands.getSpawnPoint(islandIndex);
   }
   
   /**
-   * Get a random position on the map
+   * Check if a position is on land (island or path)
    */
-  getRandomPosition(margin = 10) {
-    const range = MAP_CONFIG.halfSize - margin;
-    const x = (Math.random() * 2 - 1) * range;
-    const z = (Math.random() * 2 - 1) * range;
-    return { x, z };
+  isOnLand(x, z) {
+    return islands.isOnIsland(x, z) || creeks.isOnPath(x, z);
+  }
+  
+  /**
+   * Check if position is on an island
+   */
+  isOnIsland(x, z) {
+    return islands.isOnIsland(x, z);
+  }
+  
+  /**
+   * Check if position is on a path/creek
+   */
+  isOnPath(x, z) {
+    return creeks.isOnPath(x, z);
+  }
+  
+  /**
+   * Check if position is on a road
+   */
+  isOnRoad(x, z) {
+    return paths.isOnRoad(x, z);
+  }
+  
+  /**
+   * Get island at position
+   */
+  getIslandAt(x, z) {
+    return islands.getIslandAt(x, z);
   }
   
   /**
    * Get map bounds
    */
   getBounds() {
+    const halfSize = MAP_CONFIG.size / 2;
     return {
-      minX: -MAP_CONFIG.halfSize,
-      maxX: MAP_CONFIG.halfSize,
-      minZ: -MAP_CONFIG.halfSize,
-      maxZ: MAP_CONFIG.halfSize,
+      minX: -halfSize,
+      maxX: halfSize,
+      minZ: -halfSize,
+      maxZ: halfSize,
       size: MAP_CONFIG.size
     };
   }
   
   /**
-   * Clean up map resources
+   * Get islands reference
+   */
+  getIslands() {
+    return islands;
+  }
+  
+  /**
+   * Get creeks reference
+   */
+  getCreeks() {
+    return creeks;
+  }
+  
+  /**
+   * Get paths/roads reference
+   */
+  getPaths() {
+    return paths;
+  }
+  
+  /**
+   * Get debug info
+   */
+  getDebugInfo() {
+    return {
+      islands: islands.getDebugInfo(),
+      creeks: creeks.getDebugInfo(),
+      paths: paths.getDebugInfo(),
+    };
+  }
+  
+  /**
+   * Clean up
    */
   dispose() {
-    // Clear buildings
-    buildings.clear();
-    
-    if (this.ground) {
-      this.scene.remove(this.ground);
-      this.ground.geometry.dispose();
-      this.ground.material.dispose();
-    }
+    islands.clear();
+    creeks.clear();
+    paths.clear();
     
     if (this.debugGrid) {
       this.scene.remove(this.debugGrid);
     }
-    
-    this.boundaries.forEach(wall => {
-      this.scene.remove(wall);
-      wall.geometry.dispose();
-      wall.material.dispose();
-    });
-    
-    this.boundaries = [];
-    this.mapData.occupiedCells.clear();
-    this.mapData.buildingPositions = [];
   }
 }
 

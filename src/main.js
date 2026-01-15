@@ -1,6 +1,6 @@
 /**
- * Gargoyle - Main Entry Point
- * Initializes Three.js, Rapier physics, and runs the game loop
+ * Gargoyle - Main Entry Point (Simplified)
+ * Ground plane only - for testing movement and physics
  */
 
 import * as THREE from 'three';
@@ -16,7 +16,6 @@ import playerRegistry from './registries/playerregistry.js';
 import physicsMeshers from './physics/physicsmeshers.js';
 import physicsMovements from './physics/physicsmovements.js';
 import gameMap from './world/map.js';
-import trophies from './world/trophies.js';
 import { PlayerType } from './players/player.js';
 import TargetPlayer from './players/targetplayer.js';
 import GargoylePlayer from './players/gargoyleplayer.js';
@@ -77,11 +76,10 @@ const CONFIG = {
     cameraSize: 100
   },
   physics: {
-    gravity: { x: 0, y: 0, z: 0 }  // Disabled - custom gravity in physicsmovements.js
+    gravity: { x: 0, y: 0, z: 0 }  // Custom gravity in physicsmovements.js
   },
   game: {
-    numGargoyles: 3,
-    numTrophies: 7
+    numGargoyles: 3
   }
 };
 
@@ -93,15 +91,10 @@ function startGame() {
   GAME.state = GameState.PLAYING;
   GAME.startTime = chronograph.elapsedTime;
   
-  // Reset game
   resetGame();
-  
-  // Show HUD
   hud.show();
   
-  // Request pointer lock
   GAME.renderer.domElement.requestPointerLock();
-  
   console.log('Game started!');
 }
 
@@ -110,11 +103,7 @@ function pauseGame() {
   
   GAME.state = GameState.PAUSED;
   chronograph.pause();
-  
-  // Release pointer lock
   document.exitPointerLock();
-  
-  // Show pause menu
   menu.show(MenuState.PAUSED);
 }
 
@@ -123,8 +112,6 @@ function resumeGame() {
   
   GAME.state = GameState.PLAYING;
   chronograph.resume();
-  
-  // Request pointer lock
   GAME.renderer.domElement.requestPointerLock();
 }
 
@@ -133,62 +120,30 @@ function resetGame() {
   const localPlayer = playerRegistry.getLocalPlayer();
   if (localPlayer) {
     localPlayer.respawn(new THREE.Vector3(0, 1, 0));
-    localPlayer.trophiesCollected = 0;
   }
   
   // Reset gargoyles
   const gargoyles = playerRegistry.getGargoyles();
-  const spawnPoints = gameMap.mapData.spawnPoints.filter(s => s.type === 'gargoyle');
   gargoyles.forEach((gargoyle, i) => {
-    const spawn = spawnPoints[i % spawnPoints.length];
+    const spawn = gameMap.getSpawnPoint('gargoyle', i);
     gargoyle.respawn(new THREE.Vector3(spawn.x, spawn.y, spawn.z));
     gargoyle.isFrozen = false;
     gargoyle.isBeingObserved = false;
     gargoyle.applyFrozenVisual(false);
     
-    // Reset AI agent
     const agent = computerPlayer.agents.get(gargoyle.id);
     if (agent) {
       agent.spawnPosition.copy(gargoyle.position);
       agent.state = 'patrol';
     }
   });
-  
-  // Reset trophies
-  trophies.reset();
-  
-  // Update HUD
-  hud.updateTrophies(0, trophies.totalCount);
-}
-
-function onWin() {
-  GAME.state = GameState.WON;
-  
-  // Calculate time
-  const playTime = chronograph.elapsedTime - GAME.startTime;
-  const minutes = Math.floor(playTime / 60);
-  const seconds = Math.floor(playTime % 60);
-  const timeString = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  
-  // Release pointer lock
-  document.exitPointerLock();
-  
-  // Show win screen
-  menu.showWin({ time: timeString });
-  
-  console.log(`GAME WON! Time: ${timeString}`);
 }
 
 function onLose() {
   GAME.state = GameState.LOST;
-  
-  // Release pointer lock
   document.exitPointerLock();
-  
-  // Flash damage
   hud.flashDamage();
   
-  // Show game over screen
   setTimeout(() => {
     menu.showGameOver();
   }, 500);
@@ -202,27 +157,18 @@ function restartGame() {
   
   resetGame();
   
-  // Ensure not paused
   if (chronograph.paused) {
     chronograph.resume();
   }
   
-  // Show HUD
   hud.show();
-  
-  // Request pointer lock
   GAME.renderer.domElement.requestPointerLock();
-  
   console.log('Game restarted');
 }
 
 function goToMainMenu() {
   GAME.state = GameState.MENU;
-  
-  // Release pointer lock
   document.exitPointerLock();
-  
-  // Show main menu
   menu.show(MenuState.MAIN);
 }
 
@@ -344,7 +290,6 @@ function initControls() {
   
   GAME.renderer.domElement.addEventListener('wheel', (e) => {
     if (GAME.state === GameState.PLAYING) {
-      // Scroll up = zoom in (negative deltaY), scroll down = zoom out (positive deltaY)
       gameCamera.zoom(-e.deltaY * 0.01);
     }
   });
@@ -355,7 +300,6 @@ function initControls() {
 function initMenu() {
   menu.init({ devMode: GAME.devMode });
   
-  // Menu callbacks
   menu.onPlay = startGame;
   menu.onResume = resumeGame;
   menu.onRestart = restartGame;
@@ -386,7 +330,6 @@ function initHUD() {
     showDebug: settings.showDebug
   });
   
-  // Initially hidden until game starts
   if (!GAME.devMode) {
     hud.hide();
   }
@@ -403,39 +346,11 @@ function initCamera() {
 function initWorld() {
   gameMap.init(GAME.scene);
   
-  trophies.init(GAME.scene);
-  
-  const bounds = gameMap.getBounds();
-  trophies.spawnTrophies(bounds, gameMap.mapData.occupiedCells, CONFIG.game.numTrophies);
-  
-  trophies.onCollect = (trophy, collected, total) => {
-    hud.updateTrophies(collected, total);
-    
-    const localPlayer = playerRegistry.getLocalPlayer();
-    if (localPlayer) {
-      localPlayer.trophiesCollected = collected;
-    }
-  };
-  
-  trophies.onAllCollected = () => {
-    onWin();
-  };
-  
-  collectObstacles();
-  
-  console.log('World initialized');
-  meshRegistry.debug();
-}
-
-function collectObstacles() {
+  // No buildings = no obstacles for now
   GAME.obstacles = [];
   
-  const buildingEntries = meshRegistry.getByCategory(MeshCategory.BUILDING);
-  for (const entry of buildingEntries) {
-    GAME.obstacles.push(entry.mesh);
-  }
-  
-  console.log(`Collected ${GAME.obstacles.length} obstacles for FOV checks`);
+  console.log('World initialized (ground plane only)');
+  meshRegistry.debug();
 }
 
 async function createLocalPlayer() {
@@ -456,9 +371,6 @@ async function createLocalPlayer() {
   player.setPosition(spawn.x, spawn.y, spawn.z);
   
   player.setCamera(GAME.camera);
-  player.trophiesToWin = trophies.totalCount;
-  
-  player.onWin = onWin;
   player.onCaught = onLose;
   
   playerRegistry.register(player, { isLocal: true });
@@ -487,8 +399,7 @@ async function createGargoyles() {
     
     await gargoyle.init(GAME.scene, GAME.physics.world, GAME.physics.RAPIER);
     
-    const spawnPoints = gameMap.mapData.spawnPoints.filter(s => s.type === 'gargoyle');
-    const spawn = spawnPoints[i % spawnPoints.length] || { x: 20 + i * 10, y: 1, z: 20 };
+    const spawn = gameMap.getSpawnPoint('gargoyle', i);
     gargoyle.setPosition(spawn.x, spawn.y, spawn.z);
     
     gargoyle.targetPlayer = targetPlayer;
@@ -515,7 +426,7 @@ async function createGargoyles() {
 }
 
 // ============================================
-// GAME LOOP - Simple like Swimming.js
+// GAME LOOP
 // ============================================
 
 function gameLoop() {
@@ -526,7 +437,6 @@ function gameLoop() {
   chronograph.update();
   const dt = chronograph.deltaTime;
   
-  // Simple: movement + physics once per frame (like Swimming.js)
   if (GAME.state === GameState.PLAYING && GAME.physics.initialized) {
     updateLocalPlayerMovement(dt);
     updateAIMovement(dt);
@@ -537,16 +447,12 @@ function gameLoop() {
   render();
 }
 
-/**
- * Update local player movement
- */
 function updateLocalPlayerMovement(dt) {
   const localPlayer = playerRegistry.getLocalPlayer();
   const isFreeCam = gameCamera.isFreeCam();
   
   if (!localPlayer || isFreeCam || !controls.mouse.locked) return;
   
-  // Get movement direction from camera + input
   const moveDirection = new THREE.Vector3();
   if (controls.movement.forward !== 0 || controls.movement.right !== 0) {
     const camForward = gameCamera.getForwardDirection();
@@ -556,7 +462,6 @@ function updateLocalPlayerMovement(dt) {
     moveDirection.normalize();
   }
   
-  // Update movement
   physicsMovements.updatePlayer(
     localPlayer,
     moveDirection,
@@ -566,19 +471,13 @@ function updateLocalPlayerMovement(dt) {
   );
 }
 
-/**
- * Update AI gargoyles
- */
 function updateAIMovement(dt) {
-  // Let AI decide what to do
   computerPlayer.update(dt, GAME.obstacles);
   
-  // Apply movement to each gargoyle
   const gargoyles = playerRegistry.getGargoyles();
   for (const gargoyle of gargoyles) {
     if (gargoyle.isFrozen || !gargoyle.isAlive) continue;
     
-    // AI movement direction (forward in the direction they're facing)
     const moveDirection = new THREE.Vector3();
     if (gargoyle.input.forward !== 0) {
       moveDirection.set(
@@ -599,20 +498,18 @@ function updateAIMovement(dt) {
 }
 
 function update(dt) {
-  // Update HUD
   hud.update(dt);
   
-  // Menu state - just update camera
   if (GAME.state !== GameState.PLAYING) {
     const mouseDelta = controls.getMouseDelta();
     gameCamera.update(dt, { forward: 0, right: 0, sprint: false });
     return;
   }
   
-  // FIRST: Sync all player visuals from physics (before camera!)
+  // Sync player visuals from physics
   playerRegistry.updateAll(dt);
   
-  // THEN: Camera follows the updated player position
+  // Camera follows player
   const mouseDelta = controls.getMouseDelta();
   gameCamera.handleMouseInput(mouseDelta.x, mouseDelta.y);
   gameCamera.update(dt, controls.movement);
@@ -622,24 +519,18 @@ function update(dt) {
   
   const localPlayer = playerRegistry.getLocalPlayer();
   
-  // Gameplay updates (only when not in free cam)
   if (localPlayer && controls.mouse.locked && !isFreeCam) {
-    // Check trophy collection
-    trophies.checkCollection(localPlayer.position);
-    
     // Update FOV detection
     const gargoyles = playerRegistry.getGargoyles();
     localPlayer.updateVisibleGargoyles(gargoyles, GAME.obstacles);
     
-    // Track nearest unfrozen gargoyle for warning
+    // Track nearest unfrozen gargoyle
     let nearestThreatDist = Infinity;
     
-    // Update gargoyle observed states and check for attack
     for (const gargoyle of gargoyles) {
       const isVisible = localPlayer.visibleGargoyles.has(gargoyle.id);
       gargoyle.setObserved(isVisible);
       
-      // Check if gargoyle catches player
       if (!gargoyle.isFrozen && gargoyle.isAlive) {
         const distance = gargoyle.position.distanceTo(localPlayer.position);
         
@@ -653,10 +544,8 @@ function update(dt) {
       }
     }
     
-    // Update warning indicator
     hud.setWarning(nearestThreatDist < 15);
     
-    // Update crosshair based on what we're looking at
     if (localPlayer.visibleGargoyles.size > 0) {
       hud.setCrosshairStyle('target');
     } else {
@@ -664,25 +553,19 @@ function update(dt) {
     }
   }
   
-  // Update trophies animation
-  trophies.update(dt, chronograph.elapsedTime);
-  
-  // Update debug info
+  // Debug info
   if (hud.config.showDebug) {
     const allGargoyles = playerRegistry.getGargoyles();
     const movementInfo = localPlayer ? physicsMovements.getDebugInfo(localPlayer.id) : null;
     
-    // Get physics body position for comparison
     let physicsY = 'N/A';
     let feetY = 'N/A';
     let distFromGround = 'N/A';
     if (localPlayer?.physicsBody) {
       const trans = localPlayer.physicsBody.translation();
       physicsY = trans.y.toFixed(3);
-      // Feet position = physics center - height/2
       const feet = trans.y - localPlayer.height / 2;
       feetY = feet.toFixed(3);
-      // Ground is at Y=0, so distance = feetY - 0
       distFromGround = feet.toFixed(3);
     }
     
@@ -734,9 +617,9 @@ function onWindowResize() {
 async function init() {
   console.log('=========================================');
   console.log('        GARGOYLE - Loading...           ');
+  console.log('    (Simplified - Ground Plane Only)    ');
   console.log('=========================================');
   
-  // Check for dev mode (skip menu)
   const urlParams = new URLSearchParams(window.location.search);
   GAME.devMode = urlParams.has('dev');
   
@@ -750,14 +633,9 @@ async function init() {
   await createLocalPlayer();
   await createGargoyles();
   
-  // Initialize UI systems
   initMenu();
   initHUD();
   
-  // Initial HUD update
-  hud.updateTrophies(0, trophies.totalCount);
-  
-  // Set initial state
   if (GAME.devMode) {
     GAME.state = GameState.PLAYING;
     hud.show();
@@ -789,5 +667,4 @@ window.playerRegistry = playerRegistry;
 window.physicsMovements = physicsMovements;
 window.computerPlayer = computerPlayer;
 window.gameMap = gameMap;
-window.trophies = trophies;
 window.restartGame = restartGame;
